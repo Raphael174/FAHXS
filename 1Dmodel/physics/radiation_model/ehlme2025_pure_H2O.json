@@ -1,0 +1,64 @@
+{
+  "metadata": {
+    "model": "Ehlm\u00e9-2025 WSGGM (4+1 gray gases)",
+    "T_ref_K": 1200.0,
+    "weight_poly_degree": 4,
+    "ratio_poly_degree": 4,
+    "MR_definition": "MR = Y_H2O / Y_CO2 (molar ratio)",
+    "validity": {
+      "temperature_K": [
+        500.0,
+        5000.0
+      ],
+      "mixture_MR": [
+        0.4,
+        4.0
+      ],
+      "pressure_pathlength_atm_m": [
+        0.01,
+        60.0
+      ],
+      "pressure_note": "Coefficients were fit at ~1 atm; validity stated as p\u00b7L in atm\u00b7m."
+    },
+    "notes": [
+      "Weights include only the 4 absorbing gray gases. Clear-gas weight = 1 - sum(a_j).",
+      "For single-species (H2O in clear gas or CO2 in clear gas), MR polynomial is not used."
+    ]
+  },
+  "pure": {
+    "H2O": {
+      "kappa": [
+        0.0468,
+        12.065,
+        0.2612,
+        1.3838
+      ],
+      "c": {
+        "1": [
+          0.0958,
+          0.4709,
+          0.0098,
+          0.1402
+        ],
+        "2": [
+          0.2559,
+          -0.4102,
+          0.3383,
+          0.2131
+        ],
+        "3": [
+          -0.1009,
+          0.1193,
+          -0.1267,
+          -0.131
+        ],
+        "4": [
+          0.0105,
+          -0.0115,
+          0.0123,
+          0.0176
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,35 @@
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\mechanical\geometry\helix_geometry.py:93: OptimizeWarning: Covariance of the parameters could not be estimated
+  params_x, _ = curve_fit(poly1, s, x)
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\mechanical\geometry\helix_geometry.py:94: OptimizeWarning: Covariance of the parameters could not be estimated
+  params_theta, _ = curve_fit(poly1, s, angular_pos)
+relative diff square vs round PT=0.38587875502571345
+Le= 0.06969108749120904 V_tot_1_turn-V_pipe= 0.0058727704334511546
+Pipe max length = 5.999999849778785 m
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\physics\combustion_chemistry\combustion_gas.py:79: UserWarning: NasaPoly2::validate: 
+For species c5h11co, discontinuity in cp/R detected at Tmid = 1000
+	Value computed using low-temperature polynomial:  36.476880509999994
+	Value computed using high-temperature polynomial: 37.2250997504
+
+  self.phase = ct.Solution(chem_mech_path)
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\physics\combustion_chemistry\combustion_gas.py:79: UserWarning: NasaPoly2::validate: 
+For species c5h11co, discontinuity in h/RT detected at Tmid = 1000
+	Value computed using low-temperature polynomial:  8.779954785666664
+	Value computed using high-temperature polynomial: 8.675775924079996
+
+  self.phase = ct.Solution(chem_mech_path)
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\physics\combustion_chemistry\combustion_gas.py:120: UserWarning: ChemEquil::equilibrate: Temperature (3019.959009577109 K) outside valid range of 300 K to 3000 K
+  self.phase.equilibrate('HP') # re-equilibriate mixture
+3019.9590096538377 0.07775233367374618 2188.972125586601 1.2455381182090894 19.2677966335973 8.728235369175954e-05 0.3780971514969617
+U_g =  207.39636200700454
+    Y_co : 0.566
+    Y_h2o : 0.222
+    Y_co2 : 0.148
+    Y_oh : 0.029
+    Y_h2 : 0.02
+    Y_o : 0.006
+    Y_o2 : 0.006
+    Y_h : 0.004
+    Y_ho2 : 0.0
+    Y_hco : 0.0
+SAVED C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\studies\water_vs_helium\raw_data\helical_water_50gs_co.zip
+SUMMARY_JSON {"geometry": "helical", "fluid": "water", "mdot_kg_s": 0.05, "Q_tot_kW": 184.0092196238135, "n_nodes": 1076, "T_wg_max_K": 1207.5309990294409, "T_wc_max_K": 1192.5941181719952, "T_c_in_K": 303.1500000000312, "T_c_out_K": 943.4543898438826, "dp_c_bar": 0.16191433395139873, "quality_min": -0.8216511921991186, "quality_max": 1.7294207372544106, "min_chf_margin": 0.00223395062920681}

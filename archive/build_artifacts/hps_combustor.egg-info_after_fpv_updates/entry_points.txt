@@ -1,0 +1,4 @@
+[console_scripts]
+hps-dashboard = hps_combustor.dashboard_cli:main
+hps-steady = hps_combustor.main_steady:main
+hps-transient = hps_combustor.main_transient:main

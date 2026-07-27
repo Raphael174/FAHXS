@@ -1,0 +1,30 @@
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\physics\combustion_chemistry\combustion_gas.py:79: UserWarning: NasaPoly2::validate: 
+For species c5h11co, discontinuity in cp/R detected at Tmid = 1000
+	Value computed using low-temperature polynomial:  36.476880509999994
+	Value computed using high-temperature polynomial: 37.2250997504
+
+  self.phase = ct.Solution(chem_mech_path)
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\physics\combustion_chemistry\combustion_gas.py:79: UserWarning: NasaPoly2::validate: 
+For species c5h11co, discontinuity in h/RT detected at Tmid = 1000
+	Value computed using low-temperature polynomial:  8.779954785666664
+	Value computed using high-temperature polynomial: 8.675775924079996
+
+  self.phase = ct.Solution(chem_mech_path)
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\physics\combustion_chemistry\combustion_gas.py:120: UserWarning: ChemEquil::equilibrate: Temperature (3019.959009577109 K) outside valid range of 300 K to 3000 K
+  self.phase.equilibrate('HP') # re-equilibriate mixture
+  sweep  0: max|dT_shell|=950.805 K  T_g_out=1337.0  T_c_out=1430.9
+  sweep  1: max|dT_shell|=316.696 K  T_g_out=1451.4  T_c_out=1268.4
+  sweep  2: max|dT_shell|=122.392 K  T_g_out=1591.6  T_c_out=1211.2
+  sweep  3: max|dT_shell|= 52.377 K  T_g_out=1630.0  T_c_out=1189.2
+  sweep  4: max|dT_shell|= 22.358 K  T_g_out=1650.1  T_c_out=1180.9
+  sweep  5: max|dT_shell|=  9.564 K  T_g_out=1657.7  T_c_out=1177.7
+  sweep  6: max|dT_shell|=  4.152 K  T_g_out=1660.5  T_c_out=1176.6
+  sweep  7: max|dT_shell|=  1.839 K  T_g_out=1659.0  T_c_out=1176.2
+  sweep  8: max|dT_shell|=  0.823 K  T_g_out=1661.5  T_c_out=1176.0
+  sweep  9: max|dT_shell|=  0.374 K  T_g_out=1662.0  T_c_out=1176.0
+  sweep 10: max|dT_shell|=  0.192 K  T_g_out=1662.0  T_c_out=1176.0
+  sweep 11: max|dT_shell|=  0.097 K  T_g_out=1662.0  T_c_out=1176.0
+  sweep 12: max|dT_shell|=  0.050 K  T_g_out=1662.0  T_c_out=1176.0
+  sweep 13: max|dT_shell|=  0.027 K  T_g_out=1661.9  T_c_out=1176.0
+SAVED C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\studies\water_vs_helium\raw_data\shellntube_helium_100gs_co.zip
+SUMMARY_JSON {"geometry": "shellntube", "fluid": "helium", "mdot_kg_s": 0.1, "Q_tot_kW": 452.9796653631428, "n_nodes": 200, "n_sweeps": 14, "T_wg_max_K": 1289.0833779160876, "T_wc_max_K": 1205.1891134164293, "T_c_in_K": 303.15, "T_c_out_K": 1176.0116690646646}

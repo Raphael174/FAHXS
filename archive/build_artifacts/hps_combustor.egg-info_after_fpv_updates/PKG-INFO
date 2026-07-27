@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: hps-combustor
+Version: 0.1.0
+Summary: 1D combustor-HX co-design model — HPS private
+Requires-Python: >=3.10

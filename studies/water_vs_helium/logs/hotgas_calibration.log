@@ -1,0 +1,90 @@
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\physics\combustion_chemistry\combustion_gas.py:79: UserWarning: NasaPoly2::validate: 
+For species c5h11co, discontinuity in cp/R detected at Tmid = 1000
+	Value computed using low-temperature polynomial:  36.476880509999994
+	Value computed using high-temperature polynomial: 37.2250997504
+
+  self.phase = ct.Solution(chem_mech_path)
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\physics\combustion_chemistry\combustion_gas.py:79: UserWarning: NasaPoly2::validate: 
+For species c5h11co, discontinuity in h/RT detected at Tmid = 1000
+	Value computed using low-temperature polynomial:  8.779954785666664
+	Value computed using high-temperature polynomial: 8.675775924079996
+
+  self.phase = ct.Solution(chem_mech_path)
+C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\1Dmodel\physics\combustion_chemistry\combustion_gas.py:120: UserWarning: ChemEquil::equilibrate: Temperature (3019.959009577109 K) outside valid range of 300 K to 3000 K
+  self.phase.equilibrate('HP') # re-equilibriate mixture
+  sweep  0: max|dT_shell|=950.805 K  T_g_out=1337.0  T_c_out=1430.9
+  sweep  1: max|dT_shell|=316.696 K  T_g_out=1451.4  T_c_out=1268.4
+  sweep  2: max|dT_shell|=122.392 K  T_g_out=1591.6  T_c_out=1211.2
+  sweep  3: max|dT_shell|= 52.377 K  T_g_out=1630.0  T_c_out=1189.2
+  sweep  4: max|dT_shell|= 22.358 K  T_g_out=1650.1  T_c_out=1180.9
+  sweep  5: max|dT_shell|=  9.564 K  T_g_out=1657.7  T_c_out=1177.7
+  sweep  6: max|dT_shell|=  4.152 K  T_g_out=1660.5  T_c_out=1176.6
+  sweep  7: max|dT_shell|=  1.839 K  T_g_out=1659.0  T_c_out=1176.2
+  sweep  8: max|dT_shell|=  0.823 K  T_g_out=1661.5  T_c_out=1176.0
+  sweep  9: max|dT_shell|=  0.374 K  T_g_out=1662.0  T_c_out=1176.0
+  sweep 10: max|dT_shell|=  0.192 K  T_g_out=1662.0  T_c_out=1176.0
+  sweep 11: max|dT_shell|=  0.097 K  T_g_out=1662.0  T_c_out=1176.0
+  sweep 12: max|dT_shell|=  0.050 K  T_g_out=1662.0  T_c_out=1176.0
+  sweep 13: max|dT_shell|=  0.027 K  T_g_out=1661.9  T_c_out=1176.0
+POINT {"mdot_hotgas": 0.1, "Q_tot_kW": 452.9796653631428}
+  sweep  0: max|dT_shell|=3521.076 K  T_g_out=1337.0  T_c_out=4007.8
+  sweep  1: max|dT_shell|=705.455 K  T_g_out=2043.1  T_c_out=2425.5
+  sweep  2: max|dT_shell|=213.191 K  T_g_out=2251.3  T_c_out=2150.7
+  sweep  3: max|dT_shell|= 89.819 K  T_g_out=2250.9  T_c_out=2152.5
+  sweep  4: max|dT_shell|= 33.377 K  T_g_out=2233.1  T_c_out=2177.0
+  sweep  5: max|dT_shell|= 14.658 K  T_g_out=2224.6  T_c_out=2188.7
+  sweep  6: max|dT_shell|=  6.592 K  T_g_out=2222.0  T_c_out=2192.0
+  sweep  7: max|dT_shell|=  3.029 K  T_g_out=2221.6  T_c_out=2192.3
+  sweep  8: max|dT_shell|=  1.409 K  T_g_out=2222.0  T_c_out=2192.0
+  sweep  9: max|dT_shell|=  0.668 K  T_g_out=2222.2  T_c_out=2191.8
+  sweep 10: max|dT_shell|=  0.331 K  T_g_out=2222.1  T_c_out=2191.6
+  sweep 11: max|dT_shell|=  0.181 K  T_g_out=2222.2  T_c_out=2191.6
+  sweep 12: max|dT_shell|=  0.103 K  T_g_out=2222.3  T_c_out=2191.6
+  sweep 13: max|dT_shell|=  0.079 K  T_g_out=2222.1  T_c_out=2191.6
+  sweep 14: max|dT_shell|=  0.070 K  T_g_out=2222.1  T_c_out=2191.6
+  sweep 15: max|dT_shell|=  0.053 K  T_g_out=2222.3  T_c_out=2191.6
+  sweep 16: max|dT_shell|=  0.073 K  T_g_out=2222.3  T_c_out=2191.6
+  sweep 17: max|dT_shell|=  0.056 K  T_g_out=2222.2  T_c_out=2191.6
+  sweep 18: max|dT_shell|=  0.051 K  T_g_out=2222.3  T_c_out=2191.6
+  sweep 19: max|dT_shell|=  0.062 K  T_g_out=2222.2  T_c_out=2191.6
+  sweep 20: max|dT_shell|=  0.060 K  T_g_out=2222.3  T_c_out=2191.6
+  sweep 21: max|dT_shell|=  0.058 K  T_g_out=2222.1  T_c_out=2191.6
+  sweep 22: max|dT_shell|=  0.070 K  T_g_out=2222.2  T_c_out=2191.6
+  sweep 23: max|dT_shell|=  0.044 K  T_g_out=2222.3  T_c_out=2191.6
+POINT {"mdot_hotgas": 0.3, "Q_tot_kW": 980.103567210046}
+  sweep  0: max|dT_shell|=5909.351 K  T_g_out=1337.0  T_c_out=6400.2
+  sweep  1: max|dT_shell|=1129.107 K  T_g_out=2738.8  T_c_out=2286.8
+  sweep  2: max|dT_shell|=710.375 K  T_g_out=2764.8  T_c_out=2161.7
+  sweep  3: max|dT_shell|=197.618 K  T_g_out=2676.7  T_c_out=2600.5
+  sweep  4: max|dT_shell|=143.432 K  T_g_out=2653.4  T_c_out=2701.7
+  sweep  5: max|dT_shell|= 57.993 K  T_g_out=2657.6  T_c_out=2683.2
+  sweep  6: max|dT_shell|= 21.497 K  T_g_out=2663.0  T_c_out=2659.2
+  sweep  7: max|dT_shell|=  8.596 K  T_g_out=2665.3  T_c_out=2649.0
+  sweep  8: max|dT_shell|=  6.256 K  T_g_out=2665.8  T_c_out=2647.0
+  sweep  9: max|dT_shell|=  2.772 K  T_g_out=2665.6  T_c_out=2647.5
+  sweep 10: max|dT_shell|=  1.161 K  T_g_out=2665.5  T_c_out=2648.3
+  sweep 11: max|dT_shell|=  0.501 K  T_g_out=2665.4  T_c_out=2648.7
+  sweep 12: max|dT_shell|=  0.220 K  T_g_out=2665.3  T_c_out=2648.9
+  sweep 13: max|dT_shell|=  0.150 K  T_g_out=2665.3  T_c_out=2648.9
+  sweep 14: max|dT_shell|=  0.072 K  T_g_out=2665.3  T_c_out=2648.9
+  sweep 15: max|dT_shell|=  0.032 K  T_g_out=2665.3  T_c_out=2648.9
+POINT {"mdot_hotgas": 0.6, "Q_tot_kW": 1217.4944791423256}
+  sweep  0: max|dT_shell|=8228.605 K  T_g_out=1725.7  T_c_out=8730.7
+  sweep  1: max|dT_shell|=3921.359 K  T_g_out=2996.5  T_c_out=623.2
+  sweep  2: max|dT_shell|=1059.328 K  T_g_out=2894.9  T_c_out=2052.9
+  sweep  3: max|dT_shell|=758.346 K  T_g_out=2796.2  T_c_out=3108.5
+  sweep  4: max|dT_shell|=315.105 K  T_g_out=2804.3  T_c_out=3030.6
+  sweep  5: max|dT_shell|= 92.348 K  T_g_out=2821.3  T_c_out=2860.0
+  sweep  6: max|dT_shell|= 65.275 K  T_g_out=2827.0  T_c_out=2800.7
+  sweep  7: max|dT_shell|= 34.237 K  T_g_out=2827.2  T_c_out=2800.0
+  sweep  8: max|dT_shell|= 12.153 K  T_g_out=2826.3  T_c_out=2809.9
+  sweep  9: max|dT_shell|=  4.612 K  T_g_out=2825.7  T_c_out=2816.0
+  sweep 10: max|dT_shell|=  3.152 K  T_g_out=2825.5  T_c_out=2818.0
+  sweep 11: max|dT_shell|=  1.779 K  T_g_out=2825.5  T_c_out=2818.2
+  sweep 12: max|dT_shell|=  0.719 K  T_g_out=2825.5  T_c_out=2817.9
+  sweep 13: max|dT_shell|=  0.295 K  T_g_out=2825.5  T_c_out=2817.7
+  sweep 14: max|dT_shell|=  0.124 K  T_g_out=2825.5  T_c_out=2817.6
+  sweep 15: max|dT_shell|=  0.081 K  T_g_out=2825.5  T_c_out=2817.5
+  sweep 16: max|dT_shell|=  0.047 K  T_g_out=2825.5  T_c_out=2817.5
+POINT {"mdot_hotgas": 1.0, "Q_tot_kW": 1305.0382580297246}
+SAVED C:\Users\raphael.aubry\Desktop\travail local\Combustor-HX\studies\water_vs_helium\steam_design_study\hotgas_scaling_calibration.json

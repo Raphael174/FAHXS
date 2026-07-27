@@ -1,0 +1,12 @@
+{
+  "geometry": "shellntube",
+  "fluid": "helium",
+  "mdot_kg_s": 0.15,
+  "Q_tot_kW": 499.79623623259124,
+  "n_nodes": 200,
+  "n_sweeps": 13,
+  "T_wg_max_K": 1162.6819829101773,
+  "T_wc_max_K": 1007.972428804547,
+  "T_c_in_K": 303.15,
+  "T_c_out_K": 945.1910054765847
+}

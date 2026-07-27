@@ -1,0 +1,15 @@
+{
+  "geometry": "shellntube",
+  "fluid": "water",
+  "mdot_kg_s": 0.05,
+  "Q_tot_kW": 323.6068416572207,
+  "n_nodes": 200,
+  "n_sweeps": 25,
+  "T_wg_max_K": 2034.9356925477048,
+  "T_wc_max_K": 2032.9400359594931,
+  "T_c_in_K": 303.15,
+  "T_c_out_K": 2007.5023692206428,
+  "quality_min": -0.8216511921991186,
+  "quality_max": 3.665605871098477,
+  "min_chf_margin": 0.2750416002634198
+}

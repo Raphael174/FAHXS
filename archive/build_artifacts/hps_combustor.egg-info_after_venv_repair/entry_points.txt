@@ -1,0 +1,3 @@
+[console_scripts]
+hps-steady = hps_combustor.main_steady:main
+hps-transient = hps_combustor.main_transient:main

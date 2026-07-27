@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hps-combustor"
+version = "0.1.0"
+description = "1D combustor-HX co-design model — HPS private"
+requires-python = ">=3.10"
+
+[project.scripts]
+hps-steady = "hps_combustor.main_steady:main"
+hps-transient = "hps_combustor.main_transient:main"
+hps-dashboard = "hps_combustor.dashboard_cli:main"
+
+[tool.setuptools.package-dir]
+"hps_combustor" = "1Dmodel"
+
+[tool.setuptools]
+packages = [
+    "hps_combustor",
+    "hps_combustor.configs",
+    "hps_combustor.mechanical",
+    "hps_combustor.mechanical.geometry",
+    "hps_combustor.mechanical.material_specs",
+    "hps_combustor.model_data_process",
+    "hps_combustor.physics",
+    "hps_combustor.physics.combustion_chemistry",
+    "hps_combustor.physics.radiation_model",
+    "hps_combustor.transient_core",
+    "hps_combustor.validation",
+]
