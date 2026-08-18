@@ -50,8 +50,8 @@ if __name__ == "__main__" and __package__ is None:
     raise SystemExit(0)
 
 import numpy as np
-from CoolProp.CoolProp import PropsSI
 
+from .core.thermo import IdealGasBackend
 from .physics.combustion_chemistry.combustion_gas import combustion_gas_solve, choose_fuel
 from .physics.combustion_chemistry.fpv_manifold import build_fpv_manifold, FPVManifold
 from .physics.heat_transfer_correlations import (
@@ -91,6 +91,7 @@ class shellntube_solver:
         self.numericalProp = numericalProp
         self.system_requirements = system_requirements
         self.corrCoeffs = corrCoeffs if corrCoeffs is not None else CorrelationCoefficients()
+        self._thermo = IdealGasBackend()
         self.N = int(N_axial)
         self.flow_config = flow_config   # "co" | "counter" (tube-gas always forward)
         self.dx = self.stp.L_tube / self.N
@@ -476,10 +477,10 @@ class shellntube_solver:
             k = flashed.conductivity()
             cp = flashed.cpmass()
         else:
-            rho = PropsSI('D', 'T', T_shell_local, 'P', p_c, cool)
-            mu = PropsSI('V', 'T', T_shell_local, 'P', p_c, cool)
-            k = PropsSI('L', 'T', T_shell_local, 'P', p_c, cool)
-            cp = PropsSI('C', 'T', T_shell_local, 'P', p_c, cool)
+            rho = self._thermo.density(cool, T_shell_local, p_c)
+            mu = self._thermo.viscosity(cool, T_shell_local, p_c)
+            k = self._thermo.conductivity(cool, T_shell_local, p_c)
+            cp = self._thermo.cp(cool, T_shell_local, p_c)
         Pr = cp * mu / k
         G_s = self.coolantProp.mass_flow_c / self.geom["S_m"]
         Re_s = self.stp.D_tube_outer * G_s / mu
@@ -533,21 +534,21 @@ class shellntube_solver:
                 T_cur = self.coolantProp.T_in
                 for i in range(N):
                     T[i] = T_cur
-                    cp_c = PropsSI('C', 'T', T_cur, 'P', self.coolantProp.p_in, cool)
+                    cp_c = self._thermo.cp(cool, T_cur, self.coolantProp.p_in)
                     T_cur += dQ_total[i] / (self.coolantProp.mass_flow_c * cp_c)
                 T_out = T_cur
             else:  # counter: coolant enters at the gas-OUTLET end (index N-1) and marches to 0
                 T_cur = self.coolantProp.T_in
                 for i in range(N - 1, -1, -1):
                     T[i] = T_cur
-                    cp_c = PropsSI('C', 'T', T_cur, 'P', self.coolantProp.p_in, cool)
+                    cp_c = self._thermo.cp(cool, T_cur, self.coolantProp.p_in)
                     T_cur += dQ_total[i] / (self.coolantProp.mass_flow_c * cp_c)
                 T_out = T_cur  # exits at index 0 (gas inlet end)
             return T, T_out, None
 
         cool_cp = coolprop_fluid_string(cool, self._liquid_backend)
         p_in = self.coolantProp.p_in
-        h_in = PropsSI('H', 'T', self.coolantProp.T_in, 'P', p_in, cool)
+        h_in = self._thermo.enthalpy(cool, self.coolantProp.T_in, p_in)
         quality = np.zeros(N); void = np.zeros(N); h_arr = np.zeros(N); p_arr = np.zeros(N)
         # Very low coolant flow relative to duty can superheat the coolant
         # past the fluid's EOS validity ceiling (e.g. CoolProp's Water backend
@@ -614,7 +615,7 @@ class shellntube_solver:
             # at the physical subcooled inlet instead of a T_in/T_out guess.
             T_shell = np.full(N, self.coolantProp.T_in)
             p_c = self.coolantProp.p_in
-            h_in = PropsSI('H', 'T', self.coolantProp.T_in, 'P', p_c, self.coolantProp.coolant)
+            h_in = self._thermo.enthalpy(self.coolantProp.coolant, self.coolantProp.T_in, p_c)
             eq0 = real_fluid_state_ph(self.coolantProp.coolant, p_c, h_in)
             liquid_state = dict(h=np.full(N, h_in), quality=np.full(N, eq0.quality),
                                 void=np.full(N, eq0.void_fraction), p=np.full(N, p_c),

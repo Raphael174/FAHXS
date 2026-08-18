@@ -14,6 +14,12 @@ from pathlib import Path
 
 import CoolProp.CoolProp as CP
 
+from hps_combustor.core.thermo import (
+    ThermoState as CoolantState,
+    coolant_state_from_Tp,
+    coolant_state_from_ph,
+    coolant_inlet_state,
+)
 from hps_combustor.physics.liquid_flow.chf import groeneveld_2006_chf
 from hps_combustor.physics.liquid_flow.coolprop_state_cache import (
     coolprop_fluid_string,
@@ -38,6 +44,13 @@ from hps_combustor.physics.liquid_flow.registry import (
     select_supercritical,
 )
 
+# CoolantState, coolant_state_from_Tp, coolant_state_from_ph, and
+# coolant_inlet_state now live in hps_combustor.core.thermo (Stage A of
+# docs/solver_design/FV_CORE_REWORK_PLAN.md) and are re-exported here
+# unchanged so every existing importer of this module keeps working. This is
+# a pure relocation: the CoolProp call sequences are identical to what used
+# to be defined inline in this file.
+
 # Quality window, centered on quality=0 (saturated-liquid boiling onset), over
 # which the subcooled single-phase-liquid closure and the saturated two-phase
 # closure are blended instead of hard-switched. Purely a numerical smoothing
@@ -46,30 +59,6 @@ from hps_combustor.physics.liquid_flow.registry import (
 # ``bergles_rohsenow_onb_wall_superheat`` for the actual physical gate), and
 # not applied at the quality=1 (complete-vaporization) boundary.
 BOILING_ONSET_BLEND_HALF_WIDTH = 0.02
-
-
-@dataclass(frozen=True)
-class CoolantState:
-    fluid: str
-    model: str
-    p_Pa: float
-    T_K: float
-    h_J_kg: float
-    rho_kg_m3: float
-    mu_Pa_s: float
-    k_W_m_K: float
-    cp_J_kg_K: float
-    Pr: float
-    quality: float
-    void_fraction: float
-    phase: str
-    # Supercritical-regime fields (defaulted so the subcritical constructors
-    # above are untouched). ``is_supercritical`` gates the supercritical closure
-    # branch; ``p_reduced`` = p/p_crit; ``T_pc_K`` is the pseudo-critical
-    # temperature at this pressure (None subcritically).
-    is_supercritical: bool = False
-    p_reduced: float | None = None
-    T_pc_K: float | None = None
 
 
 @dataclass(frozen=True)
@@ -96,98 +85,61 @@ class CoolantClosureResult:
     # HTC magnitude model (see regime.buoyancy_parameter docstring).
     htd_risk: bool = False
     buoyancy_parameter: float | None = None
+    # Diagnostic-only cross-check HTC from an alternate registered closure
+    # (currently: RPE Eq. 8-24 Dittus-Boelter/Colburn vs. the active
+    # Gnielinski subcooled-liquid HTC) -- reported alongside htc_W_m2_K,
+    # NEVER used in its place. Populated only in the subcooled-liquid branch;
+    # None everywhere else. See correlations.py:dittus_boelter_colburn_liquid_
+    # nusselt's docstring for measured divergence from the active closure.
+    cross_check_closure_name: str | None = None
+    cross_check_htc_W_m2_K: float | None = None
 
 
-def coolant_state_from_Tp(fluid: str, T_K: float, p_Pa: float) -> CoolantState:
-    """Single-phase CoolProp state from temperature and pressure."""
-    rho = CP.PropsSI("D", "T", T_K, "P", p_Pa, fluid)
-    mu = CP.PropsSI("V", "T", T_K, "P", p_Pa, fluid)
-    k = CP.PropsSI("L", "T", T_K, "P", p_Pa, fluid)
-    cp = CP.PropsSI("C", "T", T_K, "P", p_Pa, fluid)
-    h = CP.PropsSI("H", "T", T_K, "P", p_Pa, fluid)
-    return CoolantState(
-        fluid=fluid,
-        model="single_phase_coolprop",
-        p_Pa=float(p_Pa),
-        T_K=float(T_K),
-        h_J_kg=float(h),
-        rho_kg_m3=float(rho),
-        mu_Pa_s=float(mu),
-        k_W_m_K=float(k),
-        cp_J_kg_K=float(cp),
-        Pr=float(cp * mu / k),
-        quality=float("nan"),
-        void_fraction=0.0,
-        phase="single_phase",
-    )
-
-
-def coolant_state_from_ph(
-    fluid: str, p_Pa: float, h_J_kg: float, model: str, backend: str = "HEOS"
-) -> CoolantState:
-    """Coolant state closure from pressure and enthalpy.
-
-    ``backend`` opts into a faster, interpolated CoolProp property backend
-    ("TTSE"/"BICUBIC" - see coolprop_state_cache.py) for the
-    equilibrium_liquid path only; the returned CoolantState.fluid is always
-    the plain fluid name regardless (tagging stays an internal computation
-    detail, not something that leaks into records/labels).
-    """
-    if model == "single_phase_coolprop":
-        T = CP.PropsSI("T", "P", p_Pa, "H", h_J_kg, fluid)
-        return coolant_state_from_Tp(fluid, T, p_Pa)
-    if model != "equilibrium_liquid":
-        raise ValueError(f"unknown coolant model: {model!r}")
-
-    fluid_cp = coolprop_fluid_string(fluid, backend)
-    # real_fluid_state_ph: dome-based below p_crit (bit-identical to the former
-    # equilibrium_state_ph call), single-phase real-EOS above it (no crash).
-    eq = _regime.real_fluid_state_ph(fluid_cp, p_Pa, h_J_kg)
-    supercritical = _regime.is_supercritical(fluid_cp, p_Pa)
-    if eq.phase == "two_phase":
-        sat = saturation_state(fluid_cp, p_Pa)
-        x = min(max(eq.quality, 0.0), 1.0)
-        mu = (1.0 - x) * sat.mu_l_Pa_s + x * sat.mu_v_Pa_s
-        k = (1.0 - x) * sat.k_l_W_m_K + x * sat.k_v_W_m_K
-        cp = (1.0 - x) * sat.cp_l_J_kg_K + x * sat.cp_v_J_kg_K
-    else:
-        flashed = get_cached_state(fluid_cp).flash_ph(p_Pa, h_J_kg)
-        mu = flashed.viscosity()
-        k = flashed.conductivity()
-        cp = flashed.cpmass()
-    p_crit = get_cached_state(fluid_cp).p_crit_Pa
-    T_pc = _regime.pseudo_critical_temperature(fluid_cp, p_Pa) if supercritical else None
-    return CoolantState(
-        fluid=fluid,
-        model=model,
-        p_Pa=float(p_Pa),
-        T_K=float(eq.T_K),
-        h_J_kg=float(h_J_kg),
-        rho_kg_m3=float(eq.rho_kg_m3),
-        mu_Pa_s=float(mu),
-        k_W_m_K=float(k),
-        cp_J_kg_K=float(cp),
-        Pr=float(cp * mu / k),
-        quality=float(eq.quality),
-        void_fraction=float(eq.void_fraction),
-        phase=eq.phase,
-        is_supercritical=bool(supercritical),
-        p_reduced=float(p_Pa / p_crit),
-        T_pc_K=None if T_pc is None else float(T_pc),
-    )
-
-
-def coolant_inlet_state(coolant_prop) -> CoolantState:
-    """Build the inlet state from a ``coolantProp``-like dataclass instance."""
-    model = getattr(coolant_prop, "coolant_model", "single_phase_coolprop")
-    fluid = getattr(coolant_prop, "coolant", "Helium")
-    T_in = float(coolant_prop.T_in)
-    p_in = float(coolant_prop.p_in)
-    if model == "single_phase_coolprop":
-        return coolant_state_from_Tp(fluid, T_in, p_in)
-    backend = getattr(coolant_prop, "liquid_property_backend", "HEOS")
-    h_in = CP.PropsSI("H", "T", T_in, "P", p_in, fluid)
-    return coolant_state_from_ph(fluid, p_in, h_in, model, backend=backend)
+def _subcooled_liquid_cross_check(
+    *,
+    state: CoolantState,
+    mass_flux_kg_m2_s: float,
+    hydraulic_diameter_m: float,
+    heat_flux_W_m2: float,
+    wall_temp_K: float | None,
+    geometry: str,
+    orientation: str,
+    x_over_D: float | None,
+) -> tuple[str | None, float | None]:
+    """Diagnostic-only alternate HTC for the subcooled-liquid branch (never
+    used to compute the returned htc_W_m2_K). Returns (closure_name, htc) or
+    (None, None) if nothing is registered / applicable -- must never raise,
+    this is a reporting sidecar, not part of the solved physics."""
+    try:
+        ctx = ClosureContext(
+            fluid=state.fluid,
+            p_Pa=state.p_Pa,
+            h_J_kg=state.h_J_kg,
+            T_bulk_K=state.T_K,
+            rho_b=state.rho_kg_m3,
+            mu_b=state.mu_Pa_s,
+            k_b=state.k_W_m_K,
+            cp_b=state.cp_J_kg_K,
+            Pr_b=state.Pr,
+            mass_flux_kg_m2_s=mass_flux_kg_m2_s,
+            diameter_m=hydraulic_diameter_m,
+            heat_flux_W_m2=heat_flux_W_m2,
+            wall_temp_K=wall_temp_K,
+            x_over_D=x_over_D,
+        )
+        record, _report = select_supercritical(
+            regime="subcooled_liquid",
+            geometry=geometry,
+            orientation=orientation,
+            fluid=state.fluid,
+            operating_point={
+                "Re_b": mass_flux_kg_m2_s * hydraulic_diameter_m / state.mu_Pa_s,
+                "Pr_b": state.Pr,
+            },
+        )
+        return record.name, float(record.callable(ctx))
+    except (LookupError, ValueError, ZeroDivisionError):
+        return None, None
 
 
 def evaluate_coolant_closure(
@@ -314,6 +266,17 @@ def evaluate_coolant_closure(
             dT_onb = bergles_rohsenow_onb_wall_superheat(p_Pa=p_Pa, heat_flux_W_m2=heat_flux_W_m2)
             onb_margin = dT_wall_superheat - dT_onb
 
+        cross_check_name, cross_check_htc = _subcooled_liquid_cross_check(
+            state=state,
+            mass_flux_kg_m2_s=mass_flux_kg_m2_s,
+            hydraulic_diameter_m=hydraulic_diameter_m,
+            heat_flux_W_m2=heat_flux_W_m2,
+            wall_temp_K=wall_temp_K,
+            geometry=geometry,
+            orientation=orientation,
+            x_over_D=x_over_D,
+        )
+
         return CoolantClosureResult(
             state=state,
             htc_W_m2_K=float(htc),
@@ -322,6 +285,8 @@ def evaluate_coolant_closure(
             chf_margin=None if margin is None else float(margin),
             sound_speed_m_s=float(c),
             onb_wall_superheat_margin_K=onb_margin,
+            cross_check_closure_name=cross_check_name,
+            cross_check_htc_W_m2_K=cross_check_htc,
         )
 
     # -BOILING_ONSET_BLEND_HALF_WIDTH <= quality <= 1.0: saturated two-phase

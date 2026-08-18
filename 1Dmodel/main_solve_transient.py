@@ -50,7 +50,6 @@ if __name__ == "__main__" and __package__ is None:
 import numpy as np
 from types import SimpleNamespace
 from scipy.integrate import solve_ivp
-from CoolProp.CoolProp import PropsSI
 
 from .main_solve import main_solver, solve_counterflow_physical_reference
 from .transient_core.compressible_coolant import (
@@ -409,7 +408,7 @@ class transient_solver(main_solver):
             T_c_new = np.empty(N)
             T_c_new[N - 1] = T_c_in_true
             for j in range(N - 1, 0, -1):
-                cp_c = PropsSI('C', 'T', T_c_new[j], 'P', bc["p_c_in"], cool)
+                cp_c = self._thermo.cp(cool, T_c_new[j], bc["p_c_in"])
                 T_c_new[j - 1] = T_c_new[j] + (dq_cold[j] / self.N_ch) * self.dx / \
                     (bc["mdot_c"] / self.N_ch * cp_c)
                 # clip inside the loop (not just after) — an intermediate value can go
@@ -467,7 +466,7 @@ class transient_solver(main_solver):
                 p_c = float(p_profile[0])
         else:
             T_c, p_c = Tc0, pc0
-        rho_c = PropsSI('D', 'T', T_c, 'P', p_c, cool)
+        rho_c = self._thermo.density(cool, T_c, p_c)
         U_c = bc["mdot_c"] / (rho_c * self.A_ch * self.N_ch)
 
         # --- initialise gas at inlet on the chemistry manifold (no Cantera in the march) ---
@@ -494,12 +493,12 @@ class transient_solver(main_solver):
                 T_c = float(T_c_profile[i])   # read-only in this mode; not marched below
                 if p_profile is not None:
                     p_c = float(p_profile[i])
-                rho_c = PropsSI('D', 'T', T_c, 'P', p_c, cool)
+                rho_c = self._thermo.density(cool, T_c, p_c)
                 U_c = bc["mdot_c"] / (rho_c * self.A_ch * self.N_ch)
             # ---- He (coil-side) properties + convection ----
-            cp_c = PropsSI('C', 'T', T_c, 'P', p_c, cool)
-            mu_c = PropsSI('V', 'T', T_c, 'P', p_c, cool)
-            k_c = PropsSI('L', 'T', T_c, 'P', p_c, cool)
+            cp_c = self._thermo.cp(cool, T_c, p_c)
+            mu_c = self._thermo.viscosity(cool, T_c, p_c)
+            k_c = self._thermo.conductivity(cool, T_c, p_c)
             Re_c = rho_c * U_c * self.Dh_ch / mu_c
             Pr_c = cp_c * mu_c / k_c
             f_c = dispatch_friction_coil(self.combustorProp.friction_coil, Re=Re_c,
@@ -519,10 +518,10 @@ class transient_solver(main_solver):
             else:
                 T_g = T_g_gox
                 p_gox = max(self.hotgasProp.p0, 1e4)
-                rho_g = PropsSI('D', 'T', T_g, 'P', p_gox, 'Oxygen')
-                mu_g = PropsSI('V', 'T', T_g, 'P', p_gox, 'Oxygen')
-                k_g = PropsSI('L', 'T', T_g, 'P', p_gox, 'Oxygen')
-                cp_g = PropsSI('C', 'T', T_g, 'P', p_gox, 'Oxygen')
+                rho_g = self._thermo.density("Oxygen", T_g, p_gox)
+                mu_g = self._thermo.viscosity("Oxygen", T_g, p_gox)
+                k_g = self._thermo.conductivity("Oxygen", T_g, p_gox)
+                cp_g = self._thermo.cp("Oxygen", T_g, p_gox)
                 omega_Yc = 0.0
             U_g = mdot_g / (rho_g * self.Ap_cc) if mdot_g > 0 else 0.0
             Re_g = rho_g * U_g * self.Dh_cc / mu_g if U_g > 0 else 1.0
@@ -578,7 +577,7 @@ class transient_solver(main_solver):
                 # simple isothermal-wall-consistent pressure drop (kept 1st-order, as steady)
                 dp_c = -f_c * rho_c * U_c ** 2 / (2 * self.Dh_ch) * dx
                 p_c += dp_c
-                rho_c = PropsSI('D', 'T', T_c, 'P', max(p_c, 1e4), cool)
+                rho_c = self._thermo.density(cool, T_c, max(p_c, 1e4))
                 U_c = bc["mdot_c"] / (rho_c * self.A_ch * self.N_ch)
 
             # gas loses the hot-side flux: advance along the manifold by accumulating the
@@ -853,14 +852,9 @@ class transient_solver(main_solver):
                 where=np.abs(delta_wc) > 1.0e-9,
             )
             conductance = np.maximum(conductance, 0.0)
-            h_in = float(PropsSI(
-                "H",
-                "T",
-                float(bc["T_c_in"]),
-                "P",
-                max(float(bc["p_c_in"]), 1.0e3),
-                self.coolantProp.coolant,
-            ))
+            h_in = self._thermo.enthalpy(
+                self.coolantProp.coolant, float(bc["T_c_in"]), max(float(bc["p_c_in"]), 1.0e3)
+            )
             step = semi_implicit_wall_compressible_coolant_step(
                 T_wall[j],
                 wall_capacity,
@@ -1144,8 +1138,8 @@ class transient_solver(main_solver):
         raise ValueError("flow_config must be 'co' or 'counter'")
 
     def _helical_nominal_coolant_dp(self, T: float, p: float, mdot_total: float) -> float:
-        rho = PropsSI('D', 'T', float(T), 'P', float(p), self.coolantProp.coolant)
-        mu = PropsSI('V', 'T', float(T), 'P', float(p), self.coolantProp.coolant)
+        rho = self._thermo.density(self.coolantProp.coolant, float(T), float(p))
+        mu = self._thermo.viscosity(self.coolantProp.coolant, float(T), float(p))
         velocity = abs(float(mdot_total)) / max(rho * self.A_ch * self.N_ch, 1.0e-30)
         Re = max(rho * velocity * self.Dh_ch / mu, 1.0)
         f = dispatch_friction_coil(
@@ -1271,7 +1265,7 @@ class transient_solver(main_solver):
         p_mean = max(float(np.nanmean(np.asarray(pressure_profile, dtype=float))), 1.0e3)
         rho_mean = max(float(np.nanmean(np.asarray(density, dtype=float))), 1.0e-9)
         area = max(float(self.A_ch * self.N_ch), 1.0e-30)
-        mu = PropsSI("V", "T", T_mean, "P", p_mean, self.coolantProp.coolant)
+        mu = self._thermo.viscosity(self.coolantProp.coolant, T_mean, p_mean)
         Re = max(abs(float(mdot)) * self.Dh_ch / max(mu * area, 1.0e-30), 1.0)
         f = dispatch_friction_coil(
             self.combustorProp.friction_coil,
@@ -1316,13 +1310,8 @@ class transient_solver(main_solver):
         mdot = max(abs(float(mdot_reference)), float(mdot_floor))
         out = np.empty(self.N + 1, dtype=float)
         for i in range(self.N + 1):
-            mu = PropsSI(
-                "V",
-                "T",
-                float(T_face[i]),
-                "P",
-                max(float(p_face[i]), 1.0e3),
-                self.coolantProp.coolant,
+            mu = self._thermo.viscosity(
+                self.coolantProp.coolant, float(T_face[i]), max(float(p_face[i]), 1.0e3)
             )
             Re = max(mdot * self.Dh_ch / max(mu * area, 1.0e-30), 1.0)
             f = dispatch_friction_coil(
@@ -1428,8 +1417,7 @@ class transient_solver(main_solver):
     # ------------------------------------------------------------------
     def _He_inventory(self):
         """He mass held in the coil void [kg] at inlet conditions (for residence time)."""
-        rho = PropsSI('D', 'T', self.coolantProp.T_in, 'P', self.coolantProp.p_in,
-                      self.coolantProp.coolant)
+        rho = self._thermo.density(self.coolantProp.coolant, self.coolantProp.T_in, self.coolantProp.p_in)
         V = self.A_ch * self.N_ch * self.L_ch_max
         return rho * V
 

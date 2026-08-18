@@ -52,13 +52,17 @@ from .mechanical.loads import *
 from .model_data_process.data_processing import make_solver_data
 from .model_data_process.data_plotting import HXDashboard
 # Libraries
-from CoolProp.CoolProp import PropsSI
 from CoolProp import AbstractState
+from .core.thermo import IdealGasBackend
 import numpy as np
 from scipy.constants import gas_constant
 from scipy.integrate import simpson
 from pathlib import Path
 import copy
+
+# Module-level thermo backend for the free functions below (not attached to
+# a main_solver instance) — same stateless IdealGasBackend the class uses.
+_thermo = IdealGasBackend()
 
 
 class main_solver :
@@ -95,11 +99,12 @@ class main_solver :
         self.numericalProp = numericalProp
         self.system_requirements = system_requirements
         self.corrCoeffs = corrCoeffs if corrCoeffs is not None else CorrelationCoefficients()
+        self._thermo = IdealGasBackend()
 
         # Coolant molar mass (gas-mode sound-speed/Mach calc only): looked up
         # from CoolProp for whatever fluid is configured, not a hardcoded
         # per-fluid constant — coolantProp.coolant may be any CoolProp fluid.
-        self._coolant_molar_mass_g_mol = PropsSI('MOLAR_MASS', self.coolantProp.coolant) * 1000.0
+        self._coolant_molar_mass_g_mol = self._thermo.molar_mass(self.coolantProp.coolant) * 1000.0
 
         # fuel set up
         self.chem_mech_path, self.Y_fuel, self.Hv_fuel = choose_fuel(self.hotgasProp.fuel)
@@ -186,7 +191,7 @@ class main_solver :
         else:  # "counter" (default)
             self.T_c, self.p_c = self.coolantProp.T_out, self.coolantProp.p_out
             self._flow_sign = -1
-        self.rho_c = PropsSI('D', 'T', self.T_c, 'P', self.p_c, self.coolantProp.coolant)
+        self.rho_c = self._thermo.density(self.coolantProp.coolant, self.T_c, self.p_c)
         self.U_c = self.coolantProp.mass_flow_c / (self.rho_c * self.A_ch * self.N_ch)
 
         # Liquid (boiling) coolant path: state is (p,h), never (T,p) — see
@@ -221,9 +226,8 @@ class main_solver :
             # cold inlet enthalpy (never legitimately reached — hitting it
             # means the march has run away nonphysically) and is verified
             # evaluable at __init__ time, backing off geometrically if not.
-            h_in_reference = PropsSI(
-                'H', 'T', float(self.coolantProp.T_in), 'P', float(self.coolantProp.p_in),
-                self.coolantProp.coolant,
+            h_in_reference = self._thermo.enthalpy(
+                self.coolantProp.coolant, float(self.coolantProp.T_in), float(self.coolantProp.p_in),
             )
             margin = 5.0e5
             while margin > 1.0e3:
@@ -260,7 +264,7 @@ class main_solver :
                 self.enthalpy_c = float(_liquid_enthalpy_hot_end_override)
                 self.p_c = float(self.coolantProp.p_in)
             else:
-                self.enthalpy_c = PropsSI('H', 'T', self.T_c, 'P', self.p_c, self.coolantProp.coolant)
+                self.enthalpy_c = self._thermo.enthalpy(self.coolantProp.coolant, self.T_c, self.p_c)
             self.q_w = 0.0  # seed for the lagged heat-flux term in the first node's boiling HTC
             initial_closure = evaluate_coolant_closure(
                 coolant_prop=self.coolantProp,
@@ -432,7 +436,6 @@ class main_solver :
     def _check_global(self):
         """Run-end energy balance and limit checks — called from HX_sizing_brief."""
         import numpy as np
-        from CoolProp.CoolProp import PropsSI
         p = self.numericalProp
 
         if self._liquid_mode:
@@ -492,8 +495,8 @@ class main_solver :
             # Coolant enthalpy rise: integrate cp dT along the run
             T_c_arr = np.array(self.data_master["T_c"])
             p_c_arr = np.array(self.data_master["p_c"])
-            h_c_out = PropsSI('H', 'T', T_c_arr[0],  'P', p_c_arr[0],  self.coolantProp.coolant)
-            h_c_in  = PropsSI('H', 'T', T_c_arr[-1], 'P', p_c_arr[-1], self.coolantProp.coolant)
+            h_c_out = self._thermo.enthalpy(self.coolantProp.coolant, T_c_arr[0],  p_c_arr[0])
+            h_c_in  = self._thermo.enthalpy(self.coolantProp.coolant, T_c_arr[-1], p_c_arr[-1])
             Q_coolant = self.coolantProp.mass_flow_c * abs(h_c_out - h_c_in)
             imbalance = abs(Q_nodes - Q_coolant) / max(Q_nodes, 1.0)
             print(f"Energy balance: Q_nodes={Q_nodes/1e3:.2f} kW | Q_coolant={Q_coolant/1e3:.2f} kW | imbalance={imbalance*100:.1f}%")
@@ -651,18 +654,18 @@ class main_solver :
                 self.He = float('nan')
             else:
                 #* check for compressibility factor
-                self.Z = PropsSI('Z','T',self.T_c,'P',self.p_c,self.coolantProp.coolant)
+                self.Z = self._thermo.compressibility(self.coolantProp.coolant, self.T_c, self.p_c)
                 # TODO(Z-correction): governing_equations.py uses ideal-gas formulations.
                 # At He supercritical conditions (90 bar / 120 K) Z ~ 1.04-1.06: small but
                 # non-zero. To include: multiply p = Z*rho*R*T in dU/dx and dp/dx derivatives.
                 # start with initialized (U, p, T, rho)_c and T_g
 
                 # Coolant thermodynamics + convection coef
-                self.cp_c = PropsSI('C','T', self.T_c,'P',self.p_c,self.coolantProp.coolant)
-                self.cv_c = PropsSI('CVMASS','T', self.T_c,'P',self.p_c,self.coolantProp.coolant)
+                self.cp_c = self._thermo.cp(self.coolantProp.coolant, self.T_c, self.p_c)
+                self.cv_c = self._thermo.cv(self.coolantProp.coolant, self.T_c, self.p_c)
                 self.gamma_c = self.cp_c/self.cv_c
-                self.mu_c = PropsSI('V','T',self.T_c,'P',self.p_c,self.coolantProp.coolant)
-                self.k_c = PropsSI('L','T',self.T_c,'P',self.p_c,self.coolantProp.coolant)
+                self.mu_c = self._thermo.viscosity(self.coolantProp.coolant, self.T_c, self.p_c)
+                self.k_c = self._thermo.conductivity(self.coolantProp.coolant, self.T_c, self.p_c)
                 # flow characteristics
                 self.Re_c=  self.rho_c*self.U_c*self.Dh_ch/self.mu_c
                 self.De = self.Re_c*np.sqrt(self.Dh_ch/self.D_coil) # Dean number
@@ -1180,7 +1183,7 @@ def solve_counterflow_liquid_reference(
         return solver
 
     fluid = coolantProp.coolant
-    target_h = PropsSI('H', 'T', float(coolantProp.T_in), 'P', float(coolantProp.p_in), fluid)
+    target_h = _thermo.enthalpy(fluid, float(coolantProp.T_in), float(coolantProp.p_in))
     # Bisection halves the bracket each iteration (linear convergence, unlike
     # the superlinear secant method used for the gas reference), so it needs
     # more iterations for the same tolerance: with rough_span ~ cp*150K and
@@ -1219,7 +1222,7 @@ def solve_counterflow_liquid_reference(
     # start from a small margin and geometrically expand (if still short of
     # target) or shrink (if already past it) until the sign of the residual
     # flips, then bisect between the last two opposite-sign points.
-    cp_ref = PropsSI('C', 'T', float(coolantProp.T_in), 'P', float(coolantProp.p_in), fluid)
+    cp_ref = _thermo.cp(fluid, float(coolantProp.T_in), float(coolantProp.p_in))
     initial_margin = max(cp_ref * 2.0, 500.0)  # ~2 K worth of margin, a physically small starting probe
     max_bracket_attempts = 20
 

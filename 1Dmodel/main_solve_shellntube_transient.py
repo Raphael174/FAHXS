@@ -41,7 +41,6 @@ if __name__ == "__main__" and __package__ is None:
 import numpy as np
 from types import SimpleNamespace
 from scipy.integrate import solve_ivp
-from CoolProp.CoolProp import PropsSI
 
 from .main_solve_shellntube import shellntube_solver
 from .physics.heat_conduction import OneDimensionalSteadyConduction_ShellnHelicalTube
@@ -168,7 +167,7 @@ class shellntube_transient_solver(shellntube_solver):
             T_c_new = np.empty(N)
             T_c_new[N - 1] = bc["T_c_in"]
             for j in range(N - 1, 0, -1):
-                cp_c = PropsSI('C', 'T', T_c_new[j], 'P', bc["p_c_in"], cool)
+                cp_c = self._thermo.cp(cool, T_c_new[j], bc["p_c_in"])
                 T_c_new[j - 1] = T_c_new[j] + (dq_cold[j] * self.stp.N_tubes) * self.dx / \
                     (bc["mdot_c"] * cp_c)
                 T_c_new[j - 1] = float(np.clip(T_c_new[j - 1], 100.0, 1500.0))
@@ -219,20 +218,20 @@ class shellntube_transient_solver(shellntube_solver):
             else:
                 T_g = T_g_gox
                 p_gox = max(self.hotgasProp.p0, 1e4)
-                rho_g = PropsSI('D', 'T', T_g, 'P', p_gox, 'Oxygen')
-                mu_g = PropsSI('V', 'T', T_g, 'P', p_gox, 'Oxygen')
-                k_g = PropsSI('L', 'T', T_g, 'P', p_gox, 'Oxygen')
-                cp_g = PropsSI('C', 'T', T_g, 'P', p_gox, 'Oxygen')
+                rho_g = self._thermo.density("Oxygen", T_g, p_gox)
+                mu_g = self._thermo.viscosity("Oxygen", T_g, p_gox)
+                k_g = self._thermo.conductivity("Oxygen", T_g, p_gox)
+                cp_g = self._thermo.cp("Oxygen", T_g, p_gox)
                 omega_Yc = 0.0
             hot_flowing = bool(mdot_tube > 0)
             U_g = mdot_tube / (rho_g * self.A_tube_i) if hot_flowing else 0.0
             Re_g = rho_g * U_g * self.D_tube_i / mu_g if hot_flowing else 1.0
             Pr_g = cp_g * mu_g / k_g
 
-            rho_c = PropsSI('D', 'T', T_c, 'P', p_c, cool)
-            mu_c = PropsSI('V', 'T', T_c, 'P', p_c, cool)
-            k_c = PropsSI('L', 'T', T_c, 'P', p_c, cool)
-            cp_c = PropsSI('C', 'T', T_c, 'P', p_c, cool)
+            rho_c = self._thermo.density(cool, T_c, p_c)
+            mu_c = self._thermo.viscosity(cool, T_c, p_c)
+            k_c = self._thermo.conductivity(cool, T_c, p_c)
+            cp_c = self._thermo.cp(cool, T_c, p_c)
             Pr_c = cp_c * mu_c / k_c
             G_s = mdot_c / self.geom["S_m"]
             Re_c = self.stp.D_tube_outer * G_s / mu_c
