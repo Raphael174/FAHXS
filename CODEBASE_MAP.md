@@ -91,10 +91,16 @@ Wiring status (Phase 2 of the integration plan):
   resolved by `solve_counterflow_liquid_reference()` (shoots the hot-end
   starting enthalpy against the physical `T_in`/`p_in`, adaptive bracket +
   bisection — see the integration plan's hardening pass).
-- **Shell-and-tube (`main_solve_shellntube.py`)**: still reachable only
-  through the opt-in post-process call
-  (`shellntube_solver.liquid_coolant_postprocess()`); Phase 3, not yet done.
-- Both transient solvers are unaffected.
+- **Shell-and-tube (`main_solve_shellntube.py`)**: **corrected 2026-08-19**
+  (this section previously said "postprocess-only"; stale) — `self._liquid_mode`
+  couples `evaluate_coolant_closure` directly into `_shell_h_at`/
+  `_shell_side_march`, the same coupled-march pattern as the helical solver.
+  Verified by running Water and LN2/supercritical-N2 cases through it, not
+  just reading the code — see `1Dmodel/validation/friday_shelltube_water.py`/
+  `friday_shelltube_n2.py`. `shellntube_solver.liquid_coolant_postprocess()`
+  is a separate, additional opt-in diagnostic bridge, not the only path.
+- Both transient solvers are unaffected (zero liquid/boiling coolant
+  presence — confirmed by grep, not assumed, 2026-08-19).
 - `1Dmodel/validation/water_helical_example.py`: confirmed-working, standalone
   water/boiling recipe (does not touch shared `coolantProp`/`combustorProp`
   defaults, which remain the Helium/`shellntube` baseline).

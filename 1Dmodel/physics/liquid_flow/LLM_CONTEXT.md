@@ -44,11 +44,15 @@ the maintained solvers is uneven and must not be assumed uniform:
   two-phase starting point); `solve_counterflow_liquid_reference()` resolves this by
   shooting the hot-end starting enthalpy against the physical `T_in`/`p_in` instead.
   `check_liquid_march()` runs automatically at the end of a liquid-mode solve.
-- **Shell-and-tube steady (`main_solve_shellntube.py`): postprocess-only.** The coupled
-  march always uses direct CoolProp `PropsSI` calls regardless of `coolant_model`; liquid
-  physics only runs as an opt-in post-process step (`liquid_coolant_postprocess()`) that
-  consumes an already-converged `dQ` profile and reports diagnostics without feeding back
-  into wall temperature. This is Phase 3 of the integration plan, not done.
+- **Shell-and-tube steady (`main_solve_shellntube.py`): corrected 2026-08-19, was stale.**
+  `self._liquid_mode` (set from `coolant_model == "equilibrium_liquid"`) couples
+  `evaluate_coolant_closure` directly into `_shell_h_at`/`_shell_side_march` — the same
+  coupled-march pattern as the helical solver, not a postprocess-only bridge. Verified by
+  running Water and LN2/supercritical-N2 cases through it (see
+  `1Dmodel/validation/friday_shelltube_water.py`/`friday_shelltube_n2.py`), not just
+  reading the code. `liquid_coolant_postprocess()` is a *separate*, additional opt-in
+  diagnostic bridge on top of an already-converged gas-mode `dQ` profile — not the only
+  path, and not what `coolant_model="equilibrium_liquid"` actually uses.
 - **Both transient solvers (`main_solve_transient.py`, `main_solve_shellntube_transient.py`):
   zero liquid/boiling code path** — not even a postprocess bridge.
 - Do not assume `coolant_model="equilibrium_liquid"` changes solved results for
