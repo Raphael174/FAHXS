@@ -2,8 +2,8 @@
 
 **Status: Stage A COMPLETE (closed 2026-08-18). Stages B and C turn out to be
 ALREADY LARGELY BUILT (undocumented until now — see the 2026-08-18 note
-below). Stage D IN PROGRESS, split into slices D1-D4; D1 and D2 are done (see
-the notes below). Supersedes "Phase 2" of
+below). Stage D IN PROGRESS, split into slices D1-D4; D1, D2, and D3 (the
+hot-gas march) are done (see the notes below). Supersedes "Phase 2" of
 `FLUID_AGNOSTIC_CLOSURES_AND_SUPERCRITICAL_PLAN.md`, which is the prerequisite
 (Phases 0–1 complete: regime detection, closure registry, supercritical
 family).**
@@ -21,8 +21,8 @@ family).**
 > |---|---|---|
 > | D1 | `core/closures.py` + registry extension; shell-and-tube tube-side gas closures | **DONE** |
 > | D2 | `core/state.py` + `core/coolant.py` + `core/momentum.py` | **DONE (2026-08-19)** |
-> | D3 | `core/residual.py` — wall + coolant + closures + hot-gas march, one time step | not started |
-> | D4 | `core/drivers/transient.py` + repoint `main_solve_shellntube_transient.py` | not started |
+> | D3 | `core/residual.py` hot-gas march + `core/hotgas/combustor.py` + `core/wall_coolant_coupling.py` | **DONE (2026-08-19)** |
+> | D4 | `core/drivers/transient.py` — full step assembly + repoint `main_solve_shellntube_transient.py` | not started |
 >
 > **D1, done**: confirmed by reading `shelltube_tube_gas_film`
 > (`transient_core/adapters_shelltube.py:405-517` — the only function that
@@ -263,6 +263,65 @@ family).**
 > to validate that interface against.
 >
 > Full suite after D2: 258 passed (was 239), same 4 pre-existing
+> frozen-chemistry failures, unchanged.
+
+> **2026-08-19 — Stage D3 done: `core/hotgas/combustor.py` +
+> `core/wall_coolant_coupling.py` + `core/residual.py`'s hot-gas march.**
+>
+> Investigating `shelltube_hot_gas_march`
+> (`transient_core/adapters_shelltube.py:603-764`) before writing this slice
+> showed the same pattern as D1/D2: most of what it needs was already built
+> or already pure, reusable infra. It already calls `shelltube_tube_gas_film`
+> (which `core/closures.py`, D1, now wraps) and
+> `OneDimensionalSteadyConduction_ShellnHelicalTube` (which `core/wall.py`,
+> Stage C, already reproduces). Its `gas_state_at` provider argument —
+> `fpv_gas_state_provider`/`equilibrium_gas_state_provider`/
+> `oxygen_gas_state_provider` — was confirmed entirely geometry-independent
+> already (FPV manifold / equilibrium manifold / CoolProp Oxygen sensible
+> cooling), same "pure infra, move as-is" category as `compressible_coolant.py`
+> was for D2. Relocated (unchanged, shim left behind, proven identical-object)
+> into `core/hotgas/combustor.py` — the first real content for the file the
+> original §3 sketch named for wrapping "chamber Cantera/FPV provider".
+> Likewise relocated `semi_implicit_wall_compressible_coolant_step` (from
+> `transient_core/wall_compressible_coolant.py`, independently classified as
+> pure infra when Stage D exploration first inventoried `transient_core/`)
+> into `core/wall_coolant_coupling.py`.
+>
+> The one genuinely new piece: `core/residual.py::hot_gas_march`, reproducing
+> the sequential per-cell march algorithm
+> (`h_removed_{i+1} = h_removed_i + dq_hot_i·ds_i/mdot_tube`) on `FlowPath` +
+> the now-available `core/closures.py`/`core/wall.py` pieces instead of
+> `ShellTubeCoreGeometry`. Gate: exact-match (`==`) reproduction of the
+> legacy march's `T_gas`, `h_gas_W_m2K`, `dq_hot`/`dq_cold`, `T_wg`/`T_wc`,
+> and the `h_removed`/`progress` trajectory on a hand-built fixture, for both
+> `inside_tube_choice` values, with radiation and calibration coefficients
+> exercised — passed on first try for every field except one: `nusselt`,
+> which this module DERIVES as `Nu = h·D/k` (the registered closures return
+> `h` directly, not `Nu`) rather than getting it from the underlying dispatch
+> call the way the legacy march does (`h = Nu·k/D`) — the two directions
+> carry ~1e-15 relative floating-point reassociation noise, so that one
+> reported (not consumed downstream) diagnostic field is checked at
+> `rtol=1e-12` rather than exact equality; `h_gas_W_m2K`, the physically
+> consequential quantity, matched exactly.
+>
+> Relocating the gas-state providers surfaced one real test-collateral bug,
+> fixed same session: `tests/test_transient_core_coolant_fv.py`'s
+> `test_shelltube_oxygen_gas_state_provider_uses_enthalpy_removed` monkeypatched
+> `adapters_shelltube.PropsSI` to fake CoolProp — after the move,
+> `oxygen_gas_state_provider` calls `PropsSI` from its own module's
+> namespace (`core.hotgas.combustor`), so the old patch target silently
+> stopped intercepting the call and the test started exercising real
+> CoolProp instead of the fake. Caught immediately by the regression suite
+> (not a silent gap) and fixed by retargeting the patch.
+>
+> **Scope note, unchanged from the roadmap**: the two legacy quirks
+> (`dq_cold` discarded in favor of `G·(Tbar_new−Tc)`;
+> `mdot_effective = mean(|faces|)` fed to per-cell closures) live in
+> `shelltube_step_inputs`'s full step assembly, not in the hot-gas march
+> itself — confirmed while building this slice, not just assumed. The
+> reproduce-vs-fix decision for those two is still deferred to D4.
+>
+> Full suite after D3: 269 passed (was 258), same 4 pre-existing
 > frozen-chemistry failures, unchanged.
 
 > **Stage A closure note (2026-08-18):** all four legacy solvers

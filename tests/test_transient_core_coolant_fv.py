@@ -1287,7 +1287,11 @@ def test_shelltube_equilibrium_gas_state_provider_wraps_equilibrium_manifold():
 
 
 def test_shelltube_oxygen_gas_state_provider_uses_enthalpy_removed(monkeypatch):
-    from hps_combustor.transient_core import adapters_shelltube
+    # oxygen_gas_state_provider was relocated to core.hotgas.combustor in
+    # Stage D Slice 3 (2026-08-19) -- it calls PropsSI from ITS OWN module
+    # namespace now, not adapters_shelltube's (which only re-exports the
+    # function object itself, not the name lookups inside it).
+    from hps_combustor.core.hotgas import combustor as hotgas_combustor
 
     calls = []
 
@@ -1308,7 +1312,7 @@ def test_shelltube_oxygen_gas_state_provider_uses_enthalpy_removed(monkeypatch):
             return 920.0
         raise AssertionError(output)
 
-    monkeypatch.setattr(adapters_shelltube, "PropsSI", fake_props)
+    monkeypatch.setattr(hotgas_combustor, "PropsSI", fake_props)
 
     provider, initial = oxygen_gas_state_provider(
         T_inlet=110.0,

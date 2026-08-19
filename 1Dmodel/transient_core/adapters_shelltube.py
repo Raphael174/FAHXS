@@ -9,6 +9,14 @@ import numpy as np
 from CoolProp.CoolProp import PropsSI
 
 from ..core.coolant import _cfl_stable_substep_count
+from ..core.hotgas.combustor import (
+    GasStateProvider,
+    ShellTubeGasState,
+    _coerce_gas_state,
+    equilibrium_gas_state_provider,
+    fpv_gas_state_provider,
+    oxygen_gas_state_provider,
+)
 from ..physics.bell_delaware import bell_delaware_shell
 from ..physics.friction_correlations import (
     dispatch_friction_tube_straight,
@@ -106,18 +114,6 @@ class ShellTubeWallFlux:
 
 
 @dataclass(frozen=True)
-class ShellTubeGasState:
-    """Thermophysical state returned by a shell-and-tube hot-gas provider."""
-
-    T: float
-    rho: float
-    mu: float
-    k: float
-    cp: float
-    progress_source: float = 0.0
-
-
-@dataclass(frozen=True)
 class ShellTubeHotGasMarch:
     """Sequential representative-tube hot-gas march result."""
 
@@ -189,7 +185,6 @@ class ShellTubeCompressibleIntegrationResult:
     last_step: WallCompressibleCoolantStepResult | None
 
 
-GasStateProvider = Callable[[float, float, int], ShellTubeGasState | dict]
 GasProviderAtTime = Callable[[float], tuple[GasStateProvider, float]]
 ScalarAtTime = Callable[[float], float]
 CoolantPropertyProvider = Callable[[np.ndarray, float], ShellTubeFluidProperties | dict]
@@ -2063,71 +2058,6 @@ def _coolant_mass_energy_from_TP_profile(T, pressure, volume, fluid: str) -> tup
     return mass, mass * u
 
 
-def fpv_gas_state_provider(fpv) -> tuple[GasStateProvider, float]:
-    """Return a gas-state provider backed by an `FPVManifold`.
-
-    The returned initial progress is `fpv.Yc_inlet()`, matching the maintained
-    finite-rate transient convention.
-    """
-
-    progress_initial = float(fpv.Yc_inlet())
-
-    def provider(h_removed: float, progress: float, _i: int) -> ShellTubeGasState:
-        T, rho, mu, k, cp, _xH2O, _xCO2, omega = fpv.state(h_removed, progress)
-        return ShellTubeGasState(T=T, rho=rho, mu=mu, k=k, cp=cp, progress_source=omega)
-
-    return provider, progress_initial
-
-
-def equilibrium_gas_state_provider(manifold) -> tuple[GasStateProvider, float]:
-    """Return a gas-state provider backed by an equilibrium/frozen manifold."""
-
-    def provider(h_removed: float, _progress: float, _i: int) -> ShellTubeGasState:
-        T, rho, mu, k, cp, _xH2O, _xCO2 = manifold.at(h_removed)
-        return ShellTubeGasState(T=T, rho=rho, mu=mu, k=k, cp=cp, progress_source=0.0)
-
-    return provider, 0.0
-
-
-def oxygen_gas_state_provider(
-    *,
-    T_inlet: float,
-    pressure: float,
-    fluid: str = "Oxygen",
-    T_min: float = 95.0,
-    T_max: float = 1200.0,
-) -> tuple[GasStateProvider, float]:
-    """Return a pre-ignition oxygen sensible-cooling gas-state provider.
-
-    `h_removed` is interpreted as specific enthalpy removed from the incoming
-    oxygen stream. Temperature is recovered from `(H, P)` through CoolProp and
-    clipped to the requested bounds before transport properties are evaluated.
-    """
-
-    if T_inlet <= 0.0 or pressure <= 0.0:
-        raise ValueError("T_inlet and pressure must be positive")
-    if T_min <= 0.0 or T_max <= T_min:
-        raise ValueError("temperature bounds are invalid")
-
-    T0 = float(np.clip(T_inlet, T_min, T_max))
-    h0 = float(PropsSI("H", "T", T0, "P", pressure, fluid))
-
-    def provider(h_removed: float, _progress: float, _i: int) -> ShellTubeGasState:
-        h = h0 - max(float(h_removed), 0.0)
-        T = float(PropsSI("T", "H", h, "P", pressure, fluid))
-        T = float(np.clip(T, T_min, T_max))
-        return ShellTubeGasState(
-            T=T,
-            rho=float(PropsSI("D", "T", T, "P", pressure, fluid)),
-            mu=float(PropsSI("V", "T", T, "P", pressure, fluid)),
-            k=float(PropsSI("L", "T", T, "P", pressure, fluid)),
-            cp=float(PropsSI("C", "T", T, "P", pressure, fluid)),
-            progress_source=0.0,
-        )
-
-    return provider, 0.0
-
-
 def _tube_surface_factors(choice: str, corrCoeffs) -> tuple[float, float]:
     if choice == "smooth":
         return 1.0, 1.0
@@ -2174,30 +2104,6 @@ def _single_cell_shelltube_geometry(
         n_tubes=geometry.n_tubes,
         shell_inner_diameter=geometry.shell_inner_diameter,
     )
-
-
-def _coerce_gas_state(value) -> ShellTubeGasState:
-    if isinstance(value, ShellTubeGasState):
-        state = value
-    elif isinstance(value, dict):
-        state = ShellTubeGasState(
-            T=value["T"],
-            rho=value["rho"],
-            mu=value["mu"],
-            k=value["k"],
-            cp=value["cp"],
-            progress_source=value.get("progress_source", 0.0),
-        )
-    else:
-        raise TypeError("gas_state_at must return ShellTubeGasState or dict")
-    vals = np.array([state.T, state.rho, state.mu, state.k, state.cp], dtype=float)
-    if not np.all(np.isfinite(vals)):
-        raise ValueError("gas state contains non-finite values")
-    if state.T <= 0.0 or state.rho <= 0.0 or state.mu <= 0.0:
-        raise ValueError("gas T, rho, and mu must be positive")
-    if state.k <= 0.0 or state.cp <= 0.0:
-        raise ValueError("gas k and cp must be positive")
-    return state
 
 
 def _coerce_fluid_properties(value, n_cells: int) -> ShellTubeFluidProperties:
