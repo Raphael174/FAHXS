@@ -52,7 +52,8 @@ from types import SimpleNamespace
 from scipy.integrate import solve_ivp
 
 from .main_solve import main_solver, solve_counterflow_physical_reference
-from .transient_core.compressible_coolant import (
+from .core.coolant import (
+    _cfl_stable_substep_count,
     coolprop_state_from_mass_energy,
     enforce_density_bounds,
     enforce_internal_energy_floor,
@@ -61,7 +62,6 @@ from .transient_core.compressible_coolant import (
 from .transient_core.integrator import fixed_time_grid
 from .transient_core.progress import TransientProgressPrinter
 from .transient_core.adapters_shelltube import (
-    _cfl_stable_substep_count,
     _coolant_mass_energy_from_TP_profile,
     _implicit_quadratic_momentum_update,
     _limit_face_mdot_for_inventory,

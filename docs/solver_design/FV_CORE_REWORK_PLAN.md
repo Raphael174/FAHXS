@@ -2,9 +2,8 @@
 
 **Status: Stage A COMPLETE (closed 2026-08-18). Stages B and C turn out to be
 ALREADY LARGELY BUILT (undocumented until now — see the 2026-08-18 note
-below). Stage D IN PROGRESS, split into slices D1-D4 (see the second
-2026-08-18 note below); D1 (closure registry unification for shell-and-tube's
-tube-side gas closures) is done. Supersedes "Phase 2" of
+below). Stage D IN PROGRESS, split into slices D1-D4; D1 and D2 are done (see
+the notes below). Supersedes "Phase 2" of
 `FLUID_AGNOSTIC_CLOSURES_AND_SUPERCRITICAL_PLAN.md`, which is the prerequisite
 (Phases 0–1 complete: regime detection, closure registry, supercritical
 family).**
@@ -21,7 +20,7 @@ family).**
 > | Slice | Deliverable | Status |
 > |---|---|---|
 > | D1 | `core/closures.py` + registry extension; shell-and-tube tube-side gas closures | **DONE** |
-> | D2 | `core/state.py` + `core/momentum.py` + standalone coolant mass/energy kernel | not started |
+> | D2 | `core/state.py` + `core/coolant.py` + `core/momentum.py` | **DONE (2026-08-19)** |
 > | D3 | `core/residual.py` — wall + coolant + closures + hot-gas march, one time step | not started |
 > | D4 | `core/drivers/transient.py` + repoint `main_solve_shellntube_transient.py` | not started |
 >
@@ -213,6 +212,58 @@ family).**
 >    to wall-implicit/coolant-explicit, because `T(m,U)` needs a CoolProp
 >    inversion that can't be inlined into a 2×2 the way `T` alone can. That
 >    explicit half is exactly what needed the CFL fix above.
+
+> **2026-08-19 — Stage D2 done: `core/state.py` + `core/coolant.py` +
+> `core/momentum.py`.**
+>
+> **Decision (AskUserQuestion):** the new kernel carries forward explicit
+> advection + CFL-safe subcycling rather than a from-scratch implicit scheme
+> — lower risk, reuses numerics just fixed and tested twice this session,
+> matches the stage gate's "reproduce" language. Genuinely-implicit advection
+> (no CFL limit, consistent with the wall/coolant coupling's proven 2×2)
+> remains a documented future improvement, not built now — see item 5 above,
+> still true after D2.
+>
+> That decision reframed D2 into a **relocation with a shim**, not a new
+> implementation: `transient_core/compressible_coolant.py` was already
+> fluid-agnostic pure infrastructure (a `fluid: str` parameter, no geometry
+> dependence), so `core/coolant.py` moves its functions unchanged — same
+> Stage A pattern as `CoolantState` → `core/thermo.py::ThermoState`, proven
+> identical-object (not just equivalent) by
+> `tests/test_core_coolant.py::test_transient_core_shim_reexports_are_identical_objects`.
+> `transient_core/compressible_coolant.py` is now a re-export shim. Also
+> consolidated: `_cfl_stable_substep_count` (written in
+> `adapters_shelltube.py` 2026-08-18, then hand-duplicated into
+> `main_solve_transient.py`'s import list 2026-08-19 for the helical fix) now
+> lives once in `core/coolant.py`; both solvers import the same object
+> (`tests/test_core_coolant.py::test_adapters_shelltube_imports_cfl_helper_from_core`
+> / `test_main_solve_transient_imports_cfl_helper_from_core`). One genuinely
+> new function: `advance_flowpath_coolant`, a `FlowPath`-aware substep-and-sum
+> wrapper generalizing the pattern already hand-written twice this session,
+> so `core/residual.py` (D3) gets it for free instead of writing it a third
+> time.
+>
+> `core/state.py`: generalizes `transient_core/state.py::TransientStateLayout`
+> (read in full — it only packs `[Tbar_wall, T_coolant]`, the OLD
+> temperature-only coolant model) to the conservative `(mass,
+> internal_energy)` pair the project actually runs today.
+>
+> `core/momentum.py`: `quasi_steady_face_mdot`, generalizing
+> `_shelltube_quasi_steady_faces`/`_helical_quasi_steady_faces` via
+> `FlowPath`. **Found a real, previously-undocumented divergence between the
+> two while generalizing them**: in the closed-valve/low-flow branch,
+> shell-and-tube only sets the downstream boundary face; helical ADDITIONALLY
+> computes non-zero interior-face flows from cell-to-cell pressure
+> differences in that same branch. Not a documented design choice — an
+> inconsistency. `core/momentum.py` matches shell-and-tube's (simpler, fully
+> regression-tested) behavior and flags helical's divergence as tech debt for
+> whoever retires the legacy files (Stage E); it is not silently reproduced.
+> The full march-`dp/ds` `MomentumModel` protocol from §3.6 is still deferred
+> to whichever stage builds `drivers/march.py` — no real consumer exists yet
+> to validate that interface against.
+>
+> Full suite after D2: 258 passed (was 239), same 4 pre-existing
+> frozen-chemistry failures, unchanged.
 
 > **Stage A closure note (2026-08-18):** all four legacy solvers
 > (`main_solve.py`, `main_solve_shellntube.py`, `main_solve_transient.py`,

@@ -8,6 +8,7 @@ from typing import Callable
 import numpy as np
 from CoolProp.CoolProp import PropsSI
 
+from ..core.coolant import _cfl_stable_substep_count
 from ..physics.bell_delaware import bell_delaware_shell
 from ..physics.friction_correlations import (
     dispatch_friction_tube_straight,
@@ -1257,46 +1258,6 @@ def _schedule_max_abs(schedule, default: float) -> float:
             if row is not None and len(row) >= 2:
                 values.append(abs(float(row[1])))
     return max(values)
-
-
-def _cfl_stable_substep_count(
-    mass: np.ndarray,
-    face_mdot: np.ndarray,
-    dt: float,
-    *,
-    safety: float = 0.25,
-) -> int:
-    """Number of equal substeps needed to keep the explicit coolant mass/energy
-    advection (`conservative_mass_energy_step`, forward Euler in the conserved
-    variables) within its stability limit for this macro step.
-
-    This scheme is unconditionally unstable once a step advances a cell by more
-    than roughly its residence time `mass / mdot` -- confirmed empirically
-    2026-08-18 on the shell-and-tube bang-bang validation case: stable at
-    dt/tau <= ~0.2, a fast-growing single-cell spike at dt/tau ~0.4, and a
-    `FloatingPointError` from `enforce_internal_energy_bounds` within a handful
-    of steps at dt/tau > ~1. `_limit_face_mdot_for_inventory` guards a DIFFERENT
-    failure mode (a macro step draining a cell's mass net-zero) and is only
-    engaged near valve closure; it does not help here, where mass stays exactly
-    conserved throughout and the instability is in the per-cell TEMPERATURE
-    field advecting faster than the step can resolve.
-
-    Uses the worst case across cells (max |face flow|, min cell mass) rather
-    than `mdot_effective`'s mean, since a single under-resolved cell is enough
-    to trip the energy-bounds guard.
-    """
-    if dt <= 0.0:
-        return 1
-    m = np.asarray(mass, dtype=float)
-    if m.size == 0:
-        return 1
-    mdot_max = float(np.max(np.abs(np.asarray(face_mdot, dtype=float))))
-    if mdot_max <= 0.0:
-        return 1
-    tau_min = float(np.min(m)) / mdot_max
-    if tau_min <= 0.0:
-        return 1
-    return max(int(np.ceil(dt / (safety * tau_min))), 1)
 
 
 def _limit_face_mdot_for_inventory(
