@@ -1,9 +1,218 @@
 # FV Core Rework — Fluid-Agnostic Quasi-1D Finite Volume
 
-**Status: Stage A COMPLETE (closed 2026-08-18). Supersedes "Phase 2" of
+**Status: Stage A COMPLETE (closed 2026-08-18). Stages B and C turn out to be
+ALREADY LARGELY BUILT (undocumented until now — see the 2026-08-18 note
+below). Stage D IN PROGRESS, split into slices D1-D4 (see the second
+2026-08-18 note below); D1 (closure registry unification for shell-and-tube's
+tube-side gas closures) is done. Supersedes "Phase 2" of
 `FLUID_AGNOSTIC_CLOSURES_AND_SUPERCRITICAL_PLAN.md`, which is the prerequisite
-(Phases 0–1 complete: regime detection, closure registry, supercritical family).
-Ready to start Stage B.**
+(Phases 0–1 complete: regime detection, closure registry, supercritical
+family).**
+
+> **2026-08-18 — Stage D split into slices; D1 done (tube-side gas closures
+> unified into the registry).**
+>
+> Stage D as specced (`core/residual.py` + `drivers/transient.py` in one pass)
+> was too large to execute and review as one unit, especially once "unify the
+> closure mechanism into the registry" (decided over the facade alternative —
+> real risk to `optimization/calibrate.py`'s calibration paths otherwise) was
+> in scope. Split into a roadmap:
+>
+> | Slice | Deliverable | Status |
+> |---|---|---|
+> | D1 | `core/closures.py` + registry extension; shell-and-tube tube-side gas closures | **DONE** |
+> | D2 | `core/state.py` + `core/momentum.py` + standalone coolant mass/energy kernel | not started |
+> | D3 | `core/residual.py` — wall + coolant + closures + hot-gas march, one time step | not started |
+> | D4 | `core/drivers/transient.py` + repoint `main_solve_shellntube_transient.py` | not started |
+>
+> **D1, done**: confirmed by reading `shelltube_tube_gas_film`
+> (`transient_core/adapters_shelltube.py:405-517` — the only function that
+> computes shell-and-tube's hot-gas film today) that shell-and-tube uses
+> exactly four correlation functions, selected by `shellTubeProp.
+> inside_tube_choice ∈ {"smooth", "grooved"}`: `dispatch_nu_tube_straight` /
+> `dispatch_friction_tube_straight` (smooth) and `nu_corrugated_tube_vicente` /
+> `friction_corrugated_tube_vicente` (grooved). NOT `dispatch_nu_coil`/
+> `dispatch_nu_shell`/`dispatch_friction_coil` — those are helical-only and
+> shell-and-tube never calls them, narrowing "unify the registry" from the
+> originally-sketched 6 correlations down to these 4. Bell-Delaware
+> (shell-side) stays a direct call — it returns `(h, dp)` from one call
+> against a whole geometry dict, not one scalar from a `ClosureContext`;
+> forcing it into "one closure = one scalar" needs its own two-output closure
+> protocol, deferred rather than shoehorned into D1.
+>
+> Added to `physics/liquid_flow/registry.py`: `ClosureContext.corrCoeffs`
+> (calibration knobs) and `.extra` (dict escape hatch for closure-specific
+> scalars — raw axial position, roughness, corrugation geometry — with no
+> natural home in the common bulk-property fields), both optional and
+> backward compatible. Two new regime tags: `"gas_forced_convection"`
+> (HTC-returning) and `"gas_forced_convection_friction"` (Darcy-factor-
+> returning — a deliberate, documented broadening of `ClosureRecord.callable`'s
+> "returns an HTC" contract, kept as a separate regime tag specifically so an
+> h-returning and f-returning record can never be ranked against each other).
+> Four new `ClosureRecord`s in the new `physics/liquid_flow/gas_closures.py`,
+> each **delegating** to the existing validated function (no physics
+> reimplemented), selected by name (not inferred ranking) via the new
+> `core/closures.py::tube_htc_closure`/`tube_friction_closure`.
+>
+> Caught while writing the equivalence tests
+> (`tests/test_core_closures.py`, 14 tests, all bit-identical `==` not
+> `approx`): the grooved (corrugated) functions' own default `Re_lo`/`Re_hi`
+> (2000/4000) differ from `CorrelationCoefficients`' (2300/4000), which the
+> legacy adapter always passes explicitly
+> (`adapters_shelltube.py:460-461,467-480`) — a naive wrapper using the
+> functions' own defaults would have silently shifted the laminar/turbulent
+> blend band. Locked in with a dedicated regression test
+> (`test_grooved_re_thresholds_come_from_corrcoeffs_not_function_defaults`).
+>
+> Full suite after D1: 233 passed (was 219), same 4 pre-existing frozen-
+> chemistry failures, unchanged. Zero existing call sites touched — the new
+> closures are additive and not yet wired into any production solver path.
+>
+> D2 must decide whether to carry the legacy's CFL-subcycling pattern forward
+> or make coolant advection genuinely implicit. D3/D4 must decide, explicitly,
+> whether to reproduce two legacy shell-and-tube quirks found investigating
+> the CFL fix above (`dq_cold`/`T_wc` discarded in favor of `G·(Tbar−Tc)`;
+> `mdot_effective` a mean-of-faces scalar fed to per-cell closures) or fix
+> them — default is reproduce-then-flag, since the stage gate is "reproduce
+> ... within stated tolerance", not redesign.
+
+> **2026-08-18 — Stages B/C found already built; Stage D blocked on a
+> pre-existing regression, now fixed.**
+>
+> Starting Stage D work surfaced that `core/mesh.py` (`FlowPath`,
+> `StreamCoupling`, `HXAssembly`), `core/wall.py` (`CylindricalWall` + analytic
+> rib/fin), and both `core/geometry/shell_and_*.py` builders already exist,
+> with 46 passing tests including the Stage B conservative-overlap gate and
+> Stage C's `rel=1e-12` cross-validation against `physics/heat_conduction.py`.
+> This section previously said `core/mesh.py` "doesn't exist yet" — it was
+> stale. The one Stage B item still outstanding is "legacy solvers consume
+> geometry from the builders", explicitly deferred to Stage E by
+> `shell_and_helical_tube.py`'s own docstring.
+>
+> **Stage D's own migration target was broken.** Its gate is "reproduce the
+> validated shell-and-tube transient" (`solve_transient_core` via
+> `transient_core/adapters_shelltube.py`) — that path crashed with
+> `FloatingPointError: coolant internal energy left the configured CoolProp
+> temperature range (60-2500 K)` on every case in its own documented
+> validation matrix (`1Dmodel/validation/transient_core_short_runs.py`),
+> confirmed unrelated to the Stage A rewire (calls none of the edited methods).
+>
+> **Root cause**: `transient_core/compressible_coolant.py::
+> conservative_mass_energy_step` is explicit forward Euler in the coolant
+> conserved variables — unconditionally unstable once a macro step exceeds
+> roughly one cell's residence time (`mass/mdot`). The documented validation
+> matrix runs at `max_step`/`tau` ≈ 50–200 (confirmed by direct probing: an
+> amplifying single-cell temperature spike originating at the inlet cell,
+> traveling downstream step by step — the textbook explicit-upwind CFL
+> signature). Reproduces identically at `max_step` from 0.25 down to 0.005 s
+> (50× reduction), ruling out "just use the documented step size" as a fix.
+> The 2026-07-10 stored validation numbers this file's matrix once passed with
+> were themselves already inside the CFL-violated regime (archived at
+> `docs/validation/transient_core_short_run_results_PRE_CFL_FIX_2026-07-10.json`
+> for reference) — the guard's reported `energy_residual_abs_max` of 30–93 J
+> per case was the unresolved CFL error, not real energy non-closure; it just
+> hadn't yet pushed a cell property past the (also independently wrong —
+> 2500 K exceeds CoolProp's real 2000 K ceiling for He/N₂/Water, so it was
+> silently extrapolating rather than protecting) guard bound.
+>
+> **Fix**: `adapters_shelltube.py::_cfl_stable_substep_count` subdivides a
+> macro step into CFL-safe substeps for the mass/energy advection only —
+> momentum, the hot-gas march, and wall/coolant conductance stay frozen across
+> substeps (the same quasi-steady-per-macro-step assumption already documented
+> for the hot side). The outer time grid callers see is unchanged; diagnostics
+> sum over substeps. Fixed for both `quasi_steady` and `low_mach` momentum
+> models (same shared kernel). Regenerated the validation matrix: energy
+> residual drops from O(10–90) J to O(1e-8) J on every case; headline
+> `T_c_out_peak` moves +0.5% (bangbang cases) to −7% (GOX cases — larger
+> because lower flow there meant the pre-fix CFL violation was *more* severe,
+> not less). **Performance cost is real**: 45–140 s/case now vs <1 s/case
+> before, because CFL now honestly resolves a step that used to silently (and
+> wrongly) skip most of the physics. Test: `tests/test_transient_core_shelltube.py`.
+>
+> **Update, 2026-08-19: the helical transient core is now fixed too.**
+> `main_solve_transient.py`'s own inline mass/energy loop (separate code
+> from `adapters_shelltube.py`, not the file the original fix touched) had
+> the identical `FloatingPointError` signature — confirmed to be the exact
+> same root cause (not just "almost certainly"): running it at a CFL-safe
+> `max_step` produced sane, converged results, and the guard trips
+> immediately at the config that previously crashed. Fixed with the same
+> mechanism: `_cfl_stable_substep_count` (still defined once, in
+> `transient_core/adapters_shelltube.py`) is now also imported into
+> `main_solve_transient.py` — that file already imported other private
+> helpers from `adapters_shelltube.py`, so this follows existing precedent
+> rather than introducing a new cross-module dependency. Verified for both
+> `quasi_steady` and `low_mach` momentum models; energy residual at true
+> machine precision (~1e-10–1e-9 J) on both. Test:
+> `tests/test_transient_core_helical.py` (6 tests, mirrors
+> `test_transient_core_shelltube.py`'s structure).
+>
+> **Implication for Stage D's own design**: an explicit CFL limit is real and
+> currently invisible anywhere in `1Dmodel/` (confirmed by search — zero
+> `cfl`/`courant` hits). Subcycling was the right minimal fix for legacy code
+> being retired, but `core/residual.py`/`drivers/transient.py` should not
+> inherit "no CFL awareness" as a default — either make the coolant advection
+> genuinely implicit (consistent with §3.5's existing "linearly implicit per
+> cell" direction for the wall/coolant coupling) or give the transient driver
+> an explicit, config-independent CFL cap. Silent 50–200× under-resolution
+> should not be reachable from any valid config.
+>
+> **Also found, deferred**: `coolprop_state_from_mass_energy` and the
+> mass/energy update in `adapters_shelltube.py` hardcode `"Helium"` as the
+> fluid string in several call sites (not read from `coolantProp.coolant`) —
+> a fluid-agnosticity gap Stage D must not inherit, separate from the CFL fix
+> and not touched here. `1Dmodel/simulink_coupling/_vendor/hps_combustor/transient_core/`
+> holds byte-identical vendored copies of the pre-fix `transient_core/`
+> modules — now diverged from the fixed originals. Simulink work is parked, so
+> deliberately not touched; flagging so the divergence is a conscious debt,
+> not a surprise later.
+>
+> Ready to start Stage D proper. Findings gathered while investigating this
+> regression, not yet acted on:
+>
+> 1. **Factor-of-N trap, §3.1.** `transient_core.AxialGrid` stores TOTALS
+>    (×`n_parallel`); `FlowPath` deliberately stores PER-CHANNEL. Critically,
+>    `AxialGrid.coolant_volume` ≡ `FlowPath.volume_total`, **not**
+>    `volume_per_channel`. Wiring `volume_per_channel` into
+>    `initial_mass_energy_from_TP` would make every coolant inventory,
+>    residence time, and thermal mass wrong by `N_ch` — and the symptom would
+>    look exactly like the blow-up just fixed above. Shell-side is the reverse
+>    trap: its area is already a single shared passage (`n_parallel=1`) while
+>    the tube stream carries `n_parallel=N_tubes`.
+> 2. **`FlowPath` is not a strict superset of `AxialGrid`, §3.1/§3.4.**
+>    `wall_area`/`wall_volume` have no home in `core/mesh.py`, and
+>    `core/wall.py`'s `CylindricalWall` stores no `A_wall`/`rho`/`cp` despite
+>    its own docstring saying the driver integrates
+>    `(rho*cp*A_wall) dT_bar/dt`. Add it as a **total** (×`n_parallel`),
+>    matching how `WallCoolantStepInputs.wall_heat_capacity` is consumed today.
+> 3. **§3.3's "thin closure adapter" undersells a real gap.** The
+>    liquid/supercritical registry (`physics/liquid_flow/registry.py`) and the
+>    gas-side `dispatch_nu_*`/`dispatch_friction_*` chains are entirely
+>    separate mechanisms — different selection keys (inferred vs.
+>    caller-forced string), different return types (h vs. Nu), different
+>    failure semantics (`LookupError` + `ExtrapolationReport` vs.
+>    `warnings.warn` + silent fallback). `ClosureContext` has **no channel for
+>    `corrCoeffs`** — the concrete blocker, since the 21 `CorrelationCoefficients`
+>    fields are load-bearing for `optimization/calibrate.py`. The adapter must
+>    bridge **three** populations (hot gas, ideal-gas coolant, real-fluid
+>    coolant), not two. Only the supercritical branch is actually
+>    registry-driven today; subcritical branches are inline, so
+>    `extrapolation_report` is `None` there — decide the adapter's contract for
+>    that case rather than assuming every closure reports one.
+> 4. **Two places a "clean" generic residual would silently NOT reproduce the
+>    validated shell-and-tube transient, §3.5**: (a) `dq_cold`/`T_wc` are
+>    computed by the wall solve and **discarded** — actual coolant heating is
+>    `G·(Tbar_new − Tc)`, driven by the mean wall temperature, not the
+>    reconstructed cold face; (b) `mdot_effective = mean(|faces|)`, a scalar,
+>    is fed to per-cell closures rather than the local per-cell face flow.
+>    Reproducing the legacy numbers requires copying these choices exactly;
+>    "fixing" them changes the answer and is a separate decision, not a
+>    migration detail.
+> 5. **The 2×2-not-global-implicit lesson (§2, §3.5) is already being violated
+>    in the code being migrated**: `semi_implicit_wall_compressible_coolant_step`
+>    downgrades the proven fully-implicit 2×2 (`wall_coolant.py`, temperature-only)
+>    to wall-implicit/coolant-explicit, because `T(m,U)` needs a CoolProp
+>    inversion that can't be inlined into a 2×2 the way `T` alone can. That
+>    explicit half is exactly what needed the CFL fix above.
 
 > **Stage A closure note (2026-08-18):** all four legacy solvers
 > (`main_solve.py`, `main_solve_shellntube.py`, `main_solve_transient.py`,

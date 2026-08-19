@@ -68,6 +68,18 @@ class ClosureContext:
     # closures that use it fall back to their long-channel (fully developed)
     # limit.
     x_over_D: float | None = None
+    # Calibration knobs (a CorrelationCoefficients instance) for closures that
+    # need them -- e.g. the gas-side forced-convection closures registered in
+    # gas_closures.py. None for closures that don't use calibration.
+    corrCoeffs: object | None = None
+    # Escape hatch for closure-specific scalars with no natural home in the
+    # common bulk-property fields above (e.g. raw axial position "x_m" for a
+    # developing-length correction -- distinct from x_over_D above, which
+    # supercritical closures consume differently; "roughness_m";
+    # "corrugation_thickness_m"/"corrugation_pitch_m"). Closures pull what
+    # they need by key and raise a clear KeyError if it's missing, same as
+    # any other required argument.
+    extra: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -97,6 +109,16 @@ class ExtrapolationReport:
 
 @dataclass(frozen=True)
 class ClosureRecord:
+    """``callable`` returns an HTC [W/m2K] for every regime EXCEPT
+    ``"gas_forced_convection_friction"`` (see gas_closures.py), where it
+    returns a dimensionless Darcy friction factor instead -- a deliberate,
+    documented broadening of this field's meaning, not silent reuse. Records
+    are never ranked against each other across that regime boundary (the
+    regime tag is a hard filter in both ``select_supercritical`` and
+    ``get_record``), so an h-returning and f-returning record can never be
+    compared as if they were interchangeable.
+    """
+
     name: str
     regime_tags: frozenset
     geometry_tags: frozenset       # e.g. straight_tube, helical_coil, shell_crossflow

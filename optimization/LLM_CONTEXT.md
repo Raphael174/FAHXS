@@ -19,7 +19,6 @@ python -m optimization.quick_optimize
 | `quick_optimize.py` | Mass minimization with wall-temperature, pressure-drop, and Mach constraints. |
 | `optimizer_desVar.py` | Design variable definitions, ranges, and activation flags. |
 | `optimizer_dataMap.py` | Converts optimizer vectors into input dataclass instances. |
-| `optimizer_solve.py` | Older optimization execution path; inspect before using. |
 
 ## Calibration Model
 
@@ -53,3 +52,9 @@ The objective runs a full `main_solver` evaluation, so optimization is expensive
 - Calibration imports `hps_combustor`, so editable install is required unless `PYTHONPATH` is adjusted.
 - MCMC can be slow because each likelihood call runs the full solver.
 - Do not rename `CorrelationCoefficients` fields casually; calibration prior specs and design maps depend on exact names.
+
+## Change history
+
+- **2026-08-19**: deleted `optimizer_solve.py` (an older optimization execution
+  path referencing a nonexistent `ToasterProp`/`toaster` object — stale/broken,
+  zero importers, confirmed via grep before removal).
