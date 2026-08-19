@@ -61,6 +61,7 @@ from .transient_core.compressible_coolant import (
 from .transient_core.integrator import fixed_time_grid
 from .transient_core.progress import TransientProgressPrinter
 from .transient_core.adapters_shelltube import (
+    _cfl_stable_substep_count,
     _coolant_mass_energy_from_TP_profile,
     _implicit_quadratic_momentum_update,
     _limit_face_mdot_for_inventory,
@@ -855,60 +856,103 @@ class transient_solver(main_solver):
             h_in = self._thermo.enthalpy(
                 self.coolantProp.coolant, float(bc["T_c_in"]), max(float(bc["p_c_in"]), 1.0e3)
             )
-            step = semi_implicit_wall_compressible_coolant_step(
-                T_wall[j],
-                wall_capacity,
-                coolant_mass[j],
-                coolant_U[j],
-                state.temperature,
-                state.specific_enthalpy_J_kg,
-                faces,
-                hot_heat_W,
-                conductance,
-                dt,
-                inlet_enthalpy_J_kg=h_in,
-                outlet_backflow_enthalpy_J_kg=h_in,
-                mass_floor=1.0e-12,
-            )
-            m_candidate, U_candidate = enforce_density_bounds(
-                step.coolant.mass_new,
-                step.coolant.internal_energy_new_J,
-                volume,
-            )
-            if momentum_model == "low_mach":
-                provisional_U = enforce_internal_energy_floor(
-                    m_candidate,
-                    U_candidate,
+
+            # Subcycle the explicit coolant mass/energy advection when one
+            # macro step would exceed its CFL-stable limit -- same fix and
+            # same rationale as transient_core/adapters_shelltube.py's
+            # shell-and-tube kernel (see _cfl_stable_substep_count's
+            # docstring): forward-Euler advection in the conserved
+            # variables, unconditionally unstable past roughly one cell
+            # residence time. faces/hot_heat_W/conductance stay frozen
+            # across substeps -- the same quasi-steady-per-macro-step
+            # assumption this method's own docstring already states for the
+            # hot side ("Hot gas remains quasi-steady through the existing
+            # helical fluid_pass physics"), just applied at a finer grain
+            # for the part of the update that actually needs it.
+            n_sub = _cfl_stable_substep_count(coolant_mass[j], faces, dt)
+            sub_dt = dt / n_sub
+            Tw_cur = T_wall[j]
+            m_cur = coolant_mass[j]
+            U_cur = coolant_U[j]
+            T_cur = state.temperature
+            h_cur = state.specific_enthalpy_J_kg
+            hot_heat_acc = 0.0
+            adv_in_acc = 0.0
+            adv_out_acc = 0.0
+            energy_residual_acc = 0.0
+            mass_residual_acc = 0.0
+            step = None
+            for _sub in range(n_sub):
+                step = semi_implicit_wall_compressible_coolant_step(
+                    Tw_cur,
+                    wall_capacity,
+                    m_cur,
+                    U_cur,
+                    T_cur,
+                    h_cur,
+                    faces,
+                    hot_heat_W,
+                    conductance,
+                    sub_dt,
+                    inlet_enthalpy_J_kg=h_in,
+                    outlet_backflow_enthalpy_J_kg=h_in,
+                    mass_floor=1.0e-12,
+                )
+                m_candidate, U_candidate = enforce_density_bounds(
+                    step.coolant.mass_new,
+                    step.coolant.internal_energy_new_J,
                     volume,
-                    self.coolantProp.coolant,
-                    clip=False,
                 )
-                provisional_state = coolprop_state_from_mass_energy(
-                    m_candidate,
-                    provisional_U,
-                    volume,
-                    self.coolantProp.coolant,
-                )
-                p_projected = self._helical_boundary_pressure_profile(
-                    inlet_pressure=p_inlet,
-                    outlet_pressure=outlet_pressure,
-                    flow_direction=flow,
-                )
-                m_new, U_new = _coolant_mass_energy_from_TP_profile(
-                    provisional_state.temperature,
-                    p_projected,
-                    volume,
-                    self.coolantProp.coolant,
-                )
-            else:
-                m_new = m_candidate
-                U_new = enforce_internal_energy_floor(
-                    m_new,
-                    U_candidate,
-                    volume,
-                    self.coolantProp.coolant,
-                    clip=False,
-                )
+                if momentum_model == "low_mach":
+                    provisional_U = enforce_internal_energy_floor(
+                        m_candidate,
+                        U_candidate,
+                        volume,
+                        self.coolantProp.coolant,
+                        clip=False,
+                    )
+                    provisional_state = coolprop_state_from_mass_energy(
+                        m_candidate,
+                        provisional_U,
+                        volume,
+                        self.coolantProp.coolant,
+                    )
+                    p_projected = self._helical_boundary_pressure_profile(
+                        inlet_pressure=p_inlet,
+                        outlet_pressure=outlet_pressure,
+                        flow_direction=flow,
+                    )
+                    m_sub_new, U_sub_new = _coolant_mass_energy_from_TP_profile(
+                        provisional_state.temperature,
+                        p_projected,
+                        volume,
+                        self.coolantProp.coolant,
+                    )
+                else:
+                    m_sub_new = m_candidate
+                    U_sub_new = enforce_internal_energy_floor(
+                        m_sub_new,
+                        U_candidate,
+                        volume,
+                        self.coolantProp.coolant,
+                        clip=False,
+                    )
+                hot_heat_acc += step.hot_heat_added_J
+                adv_in_acc += step.coolant.advective_energy_in_J
+                adv_out_acc += step.coolant.advective_energy_out_J
+                energy_residual_acc += step.total_energy_residual_J
+                mass_residual_acc += step.coolant.mass_residual_kg
+                Tw_cur = step.T_wall_new
+                m_cur = m_sub_new
+                U_cur = U_sub_new
+                if _sub < n_sub - 1:
+                    sub_state = coolprop_state_from_mass_energy(
+                        m_cur, U_cur, volume, self.coolantProp.coolant
+                    )
+                    T_cur = sub_state.temperature
+                    h_cur = sub_state.specific_enthalpy_J_kg
+
+            m_new, U_new = m_cur, U_cur
             new_state = coolprop_state_from_mass_energy(
                 m_new,
                 U_new,
@@ -916,7 +960,7 @@ class transient_solver(main_solver):
                 self.coolantProp.coolant,
             )
 
-            T_wall[j + 1] = step.T_wall_new
+            T_wall[j + 1] = Tw_cur
             coolant_mass[j + 1] = m_new
             coolant_U[j + 1] = U_new
             T_coolant[j + 1] = new_state.temperature
@@ -925,11 +969,11 @@ class transient_solver(main_solver):
             coolant_h[j + 1] = new_state.specific_enthalpy_J_kg
             face_mdot[j + 1] = faces
             heat_wall_to_coolant_W[j + 1] = step.heat_wall_to_coolant_W
-            energy_residual[j + 1] = step.total_energy_residual_J
-            mass_residual[j + 1] = step.coolant.mass_residual_kg
-            hot_heat_added[j + 1] = step.hot_heat_added_J
-            adv_in[j + 1] = step.coolant.advective_energy_in_J
-            adv_out[j + 1] = step.coolant.advective_energy_out_J
+            energy_residual[j + 1] = energy_residual_acc
+            mass_residual[j + 1] = mass_residual_acc
+            hot_heat_added[j + 1] = hot_heat_acc
+            adv_in[j + 1] = adv_in_acc
+            adv_out[j + 1] = adv_out_acc
             last_step = step
             if progress is not None:
                 outlet_index = self.N - 1 if flow == 1 else 0

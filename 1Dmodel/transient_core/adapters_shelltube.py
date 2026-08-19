@@ -1259,6 +1259,46 @@ def _schedule_max_abs(schedule, default: float) -> float:
     return max(values)
 
 
+def _cfl_stable_substep_count(
+    mass: np.ndarray,
+    face_mdot: np.ndarray,
+    dt: float,
+    *,
+    safety: float = 0.25,
+) -> int:
+    """Number of equal substeps needed to keep the explicit coolant mass/energy
+    advection (`conservative_mass_energy_step`, forward Euler in the conserved
+    variables) within its stability limit for this macro step.
+
+    This scheme is unconditionally unstable once a step advances a cell by more
+    than roughly its residence time `mass / mdot` -- confirmed empirically
+    2026-08-18 on the shell-and-tube bang-bang validation case: stable at
+    dt/tau <= ~0.2, a fast-growing single-cell spike at dt/tau ~0.4, and a
+    `FloatingPointError` from `enforce_internal_energy_bounds` within a handful
+    of steps at dt/tau > ~1. `_limit_face_mdot_for_inventory` guards a DIFFERENT
+    failure mode (a macro step draining a cell's mass net-zero) and is only
+    engaged near valve closure; it does not help here, where mass stays exactly
+    conserved throughout and the instability is in the per-cell TEMPERATURE
+    field advecting faster than the step can resolve.
+
+    Uses the worst case across cells (max |face flow|, min cell mass) rather
+    than `mdot_effective`'s mean, since a single under-resolved cell is enough
+    to trip the energy-bounds guard.
+    """
+    if dt <= 0.0:
+        return 1
+    m = np.asarray(mass, dtype=float)
+    if m.size == 0:
+        return 1
+    mdot_max = float(np.max(np.abs(np.asarray(face_mdot, dtype=float))))
+    if mdot_max <= 0.0:
+        return 1
+    tau_min = float(np.min(m)) / mdot_max
+    if tau_min <= 0.0:
+        return 1
+    return max(int(np.ceil(dt / (safety * tau_min))), 1)
+
+
 def _limit_face_mdot_for_inventory(
     mass: np.ndarray,
     face_mdot: np.ndarray,
@@ -1842,68 +1882,107 @@ def _run_shelltube_transient_core_mass_energy(
         diagnostics.append(assembled)
 
         h_inlet = float(PropsSI("H", "T", T_inlet, "P", max(p_inlet, 1.0e3), "Helium"))
-        thermal_step = semi_implicit_wall_compressible_coolant_step(
-            T_wall[j],
-            assembled.wall_heat_capacity_J_K,
-            coolant_mass[j],
-            coolant_U[j],
-            state.temperature,
-            state.specific_enthalpy_J_kg,
-            faces,
-            assembled.wall_coolant_inputs.hot_heat_W,
-            assembled.wall_coolant_inputs.wall_to_coolant_conductance_W_per_K,
-            dt,
-            inlet_enthalpy_J_kg=h_inlet,
-            outlet_backflow_enthalpy_J_kg=h_inlet,
-            mass_floor=1.0e-12,
-        )
-        m_candidate, U_candidate = enforce_density_bounds(
-            np.maximum(thermal_step.coolant.mass_new, 1.0e-12),
-            thermal_step.coolant.internal_energy_new_J,
-            grid.coolant_volume,
-        )
-        if momentum_model == "low_mach":
-            provisional_U = enforce_internal_energy_floor(
-                m_candidate,
-                U_candidate,
+
+        # Subcycle the explicit coolant mass/energy advection when one macro
+        # step would exceed its CFL-stable limit (see _cfl_stable_substep_count
+        # docstring: forward-Euler advection, unconditionally unstable past
+        # roughly one cell residence time). faces/hot_heat_W/conductance stay
+        # frozen across substeps -- the same "quasi-steady over the fixed step"
+        # assumption already used for the hot-gas march and momentum, just
+        # applied at a finer grain for the part of the update that actually
+        # needs it.
+        n_sub = _cfl_stable_substep_count(coolant_mass[j], faces, dt)
+        sub_dt = dt / n_sub
+        Tw_cur = T_wall[j]
+        m_cur = coolant_mass[j]
+        U_cur = coolant_U[j]
+        T_cur = state.temperature
+        h_cur = state.specific_enthalpy_J_kg
+        hot_heat_acc = 0.0
+        adv_in_acc = 0.0
+        adv_out_acc = 0.0
+        energy_residual_acc = 0.0
+        mass_residual_acc = 0.0
+        thermal_step = None
+        for _sub in range(n_sub):
+            thermal_step = semi_implicit_wall_compressible_coolant_step(
+                Tw_cur,
+                assembled.wall_heat_capacity_J_K,
+                m_cur,
+                U_cur,
+                T_cur,
+                h_cur,
+                faces,
+                assembled.wall_coolant_inputs.hot_heat_W,
+                assembled.wall_coolant_inputs.wall_to_coolant_conductance_W_per_K,
+                sub_dt,
+                inlet_enthalpy_J_kg=h_inlet,
+                outlet_backflow_enthalpy_J_kg=h_inlet,
+                mass_floor=1.0e-12,
+            )
+            m_candidate, U_candidate = enforce_density_bounds(
+                np.maximum(thermal_step.coolant.mass_new, 1.0e-12),
+                thermal_step.coolant.internal_energy_new_J,
                 grid.coolant_volume,
-                "Helium",
-                clip=False,
             )
-            provisional_state = coolprop_state_from_mass_energy(
-                m_candidate,
-                provisional_U,
-                grid.coolant_volume,
-                "Helium",
-            )
-            p_projected = _shelltube_boundary_pressure_profile(
-                geometry,
-                inlet_pressure=p_inlet,
-                outlet_pressure=p_outlet,
-                flow_direction=flow,
-            )
-            m_new, U_new = _coolant_mass_energy_from_TP_profile(
-                provisional_state.temperature,
-                p_projected,
-                grid.coolant_volume,
-                "Helium",
-            )
-        else:
-            m_new = m_candidate
-            U_new = enforce_internal_energy_floor(
-                m_new,
-                U_candidate,
-                grid.coolant_volume,
-                "Helium",
-                clip=False,
-            )
+            if momentum_model == "low_mach":
+                provisional_U = enforce_internal_energy_floor(
+                    m_candidate,
+                    U_candidate,
+                    grid.coolant_volume,
+                    "Helium",
+                    clip=False,
+                )
+                provisional_state = coolprop_state_from_mass_energy(
+                    m_candidate,
+                    provisional_U,
+                    grid.coolant_volume,
+                    "Helium",
+                )
+                p_projected = _shelltube_boundary_pressure_profile(
+                    geometry,
+                    inlet_pressure=p_inlet,
+                    outlet_pressure=p_outlet,
+                    flow_direction=flow,
+                )
+                m_sub_new, U_sub_new = _coolant_mass_energy_from_TP_profile(
+                    provisional_state.temperature,
+                    p_projected,
+                    grid.coolant_volume,
+                    "Helium",
+                )
+            else:
+                m_sub_new = m_candidate
+                U_sub_new = enforce_internal_energy_floor(
+                    m_sub_new,
+                    U_candidate,
+                    grid.coolant_volume,
+                    "Helium",
+                    clip=False,
+                )
+            hot_heat_acc += thermal_step.hot_heat_added_J
+            adv_in_acc += thermal_step.coolant.advective_energy_in_J
+            adv_out_acc += thermal_step.coolant.advective_energy_out_J
+            energy_residual_acc += thermal_step.total_energy_residual_J
+            mass_residual_acc += thermal_step.coolant.mass_residual_kg
+            Tw_cur = thermal_step.T_wall_new
+            m_cur = m_sub_new
+            U_cur = U_sub_new
+            if _sub < n_sub - 1:
+                sub_state = coolprop_state_from_mass_energy(
+                    m_cur, U_cur, grid.coolant_volume, "Helium"
+                )
+                T_cur = sub_state.temperature
+                h_cur = sub_state.specific_enthalpy_J_kg
+
+        m_new, U_new = m_cur, U_cur
         new_state = coolprop_state_from_mass_energy(
             m_new,
             U_new,
             grid.coolant_volume,
             "Helium",
         )
-        T_wall[j + 1] = thermal_step.T_wall_new
+        T_wall[j + 1] = Tw_cur
         coolant_mass[j + 1] = m_new
         coolant_U[j + 1] = U_new
         T_coolant[j + 1] = new_state.temperature
@@ -1912,11 +1991,11 @@ def _run_shelltube_transient_core_mass_energy(
         enthalpy[j + 1] = new_state.specific_enthalpy_J_kg
         face_mdot[j + 1] = faces
         T_out[j + 1] = new_state.temperature[grid.outlet_index]
-        hot_heat_added_J[j + 1] = thermal_step.hot_heat_added_J
-        adv_in_J[j + 1] = thermal_step.coolant.advective_energy_in_J
-        adv_out_J[j + 1] = thermal_step.coolant.advective_energy_out_J
-        energy_residual_J[j + 1] = thermal_step.total_energy_residual_J
-        mass_residual_kg[j + 1] = thermal_step.coolant.mass_residual_kg
+        hot_heat_added_J[j + 1] = hot_heat_acc
+        adv_in_J[j + 1] = adv_in_acc
+        adv_out_J[j + 1] = adv_out_acc
+        energy_residual_J[j + 1] = energy_residual_acc
+        mass_residual_kg[j + 1] = mass_residual_acc
         heat_wall_to_coolant_W[j + 1] = thermal_step.heat_wall_to_coolant_W
         last_step = thermal_step
         if progress is not None:

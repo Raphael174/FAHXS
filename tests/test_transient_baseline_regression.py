@@ -26,16 +26,23 @@ two different code paths per file:
    (`_helical_nominal_coolant_dp`, `_helical_lumped_resistance_over_density`,
    `_helical_face_resistance_over_density` -- the low-Mach coolant-momentum
    closures). `solve_transient_core` itself could not be used for an
-   end-to-end smoke gate here: it raises a pre-existing, unrelated
+   end-to-end smoke gate here: at the time this file was written it raised a
    `FloatingPointError` ("coolant internal energy left the configured CoolProp
-   temperature range") on every short/coarse configuration tried while
-   preparing this fixture, for both helical and shell-and-tube, with schedules
-   this change never touches -- a real fragility of that path under short
-   smoke-test conditions, not something introduced here. Rather than force an
-   end-to-end run through a known-unstable path (out of scope for a Stage A
-   rewire), those three helper methods are called directly with representative
-   arguments and their numeric output pinned, the same way
-   `test_core_thermo.py` pins getter-vs-raw-call equivalence.
+   temperature range") on every short/coarse configuration tried, for both
+   helical and shell-and-tube. Root-caused 2026-08-18 (see
+   `tests/test_transient_core_shelltube.py`): a genuine CFL instability in the
+   explicit forward-Euler coolant mass/energy advection
+   (`transient_core/compressible_coolant.py`), not a bug in the guard itself --
+   any macro step exceeding roughly one cell's coolant residence time blows up.
+   The **shell-and-tube** path (`transient_core/adapters_shelltube.py`) now
+   self-subdivides such steps (`_cfl_stable_substep_count`) and is fixed and
+   tested there. The **helical** path (`main_solve_transient.py`'s own inline
+   mass/energy loop -- separate code, not the shared `adapters_shelltube.py`
+   kernel) has the same root cause but was NOT fixed here (out of scope; only
+   the shell-and-tube transient is a Stage D migration target). So this file
+   still calls those three helper methods directly rather than through a live
+   `solve_transient_core` run, the same way `test_core_thermo.py` pins
+   getter-vs-raw-call equivalence.
 
 Runtimes recorded while capturing these baselines: helical quasi_steady ~9-10
 s/case (dominated by FPV manifold + chemistry setup), shell-and-tube
