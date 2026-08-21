@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "1D combustor-HX co-design model — HPS private"
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+simulink = ["pythonfmu>=0.6"]
+
 [project.scripts]
 hps-steady = "hps_combustor.main_steady:main"
 hps-transient = "hps_combustor.main_transient:main"
@@ -27,6 +30,7 @@ packages = [
     "hps_combustor.physics",
     "hps_combustor.physics.combustion_chemistry",
     "hps_combustor.physics.radiation_model",
+    "hps_combustor.simulink_coupling",
     "hps_combustor.transient_core",
     "hps_combustor.validation",
 ]

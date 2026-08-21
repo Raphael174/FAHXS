@@ -21,6 +21,12 @@ numerics.zip
 docs/validation/
 docs/reference/
 
+# Built FMU artifacts (regenerate via simulink_coupling/build_fmu.py)
+*.fmu
+1Dmodel/simulink_coupling/dist/
+# package_for_handoff.py output (regenerate on demand, not source)
+1Dmodel/simulink_coupling.zip
+
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
 .claude/scheduled_tasks.json
