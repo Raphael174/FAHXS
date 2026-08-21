@@ -64,21 +64,39 @@ HELICAL_BASELINE = {
     },
 }
 
+# Re-derived 2026-08-20 after three shell-side corrections, all of which move
+# the shell-and-tube result and none of which touch the helical solver:
+#   1. Bell-Delaware's Sieder-Tate (mu_b/mu_w)^0.14 term enabled -- it had been
+#      left at its neutral default of 1.0, i.e. the correlation's own
+#      property-variation correction was switched off.
+#   2. Shell-to-baffle leakage area S_sb: a spurious factor of 1/2 removed
+#      (S_sb = Ds*Lsb*(pi - theta_ds/2), the gap times the arc the baffle edge
+#      follows). J_l moves 0.412 -> 0.387.
+#   3. The pressure march moved onto Bell-Delaware plus a Chisholm two-phase
+#      multiplier and a momentum (acceleration) term. Inert for this
+#      single-phase helium fixture, but recorded here for provenance.
+# Net effect on this fixture: Q_tot -0.51 % (co), -0.31 % (counter).
+#
+# Separately, the shared `input_data.py` default `mass_flow_g` was edited
+# 0.100 -> 0.075 kg/s on 2026-08-20 for an unrelated LN2 run, which had shifted
+# every value here by ~24 %. `_hotgas()` now pins it so these baselines cannot
+# be moved again by a default edit. Confirmed bit-identical across two
+# independent runs before being hardcoded, per this file's docstring.
 SHELLTUBE_BASELINE = {
     "co": {
-        "Q_tot_kW": 501.16465642979387,
-        "T_g_out": 1471.6869449120168,
-        "T_c_out": 946.9260013399642,
-        "T_wg_max": 982.7987112912376,
-        "T_wc_max": 973.1041859434229,
+        "Q_tot_kW": 499.47644015210034,
+        "T_g_out": 1479.9909108593774,
+        "T_c_out": 944.7583890730842,
+        "T_wg_max": 983.2378822091334,
+        "T_wc_max": 973.4573800514054,
         "n_sweeps": 13,
     },
     "counter": {
-        "Q_tot_kW": 550.8111090334173,
+        "Q_tot_kW": 548.6658765837284,
         "T_g_out": 1336.962142972538,
-        "T_c_out": 1010.7449948398794,
-        "T_wg_max": 1312.6687609380963,
-        "T_wc_max": 1230.7277561354472,
+        "T_c_out": 1007.9889338275057,
+        "T_wg_max": 1332.2504482812515,
+        "T_wc_max": 1251.2492620816995,
         "n_sweeps": 14,
     },
 }
@@ -101,10 +119,21 @@ def _helium_coolant():
     )
 
 
+def _hotgas():
+    """Pin the hot-gas inlet explicitly, for the same reason `_helium_coolant()`
+    pins the coolant: these baselines must be immune to edits of the shared
+    `input_data.py` defaults. Leaving this to `hotgasProp()` meant a change to
+    the default `mass_flow_g` silently moved every recorded value (this happened
+    2026-08-20, when the default was edited 0.100 -> 0.075 kg/s for an unrelated
+    LN2 run and shifted the shelltube duty by -24%).
+    """
+    return hotgasProp(mass_flow_g=100e-3)
+
+
 def _run_helical(flow_config):
     solver = main_solver(
         coolantProp=_helium_coolant(),
-        hotgasProp=hotgasProp(),
+        hotgasProp=_hotgas(),
         combustorProp=combustorProp(HX_config="shellnHelicalTube", flow_config=flow_config),
         numericalProp=numericalProp(chemistry_model="finite_rate"),
         system_requirements=system_requirements(),
@@ -118,7 +147,7 @@ def _run_helical(flow_config):
 def _run_shelltube(flow_config):
     solver = shellntube_solver(
         coolantProp=_helium_coolant(),
-        hotgasProp=hotgasProp(),
+        hotgasProp=_hotgas(),
         shellTubeProp=shellTubeProp(),
         numericalProp=numericalProp(chemistry_model="finite_rate"),
         system_requirements=system_requirements(),

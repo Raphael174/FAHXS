@@ -419,3 +419,129 @@ def homogeneous_acceleration_pressure_gradient(
     sat = saturation_state(fluid, p_Pa)
     dv_dx = (1.0 / sat.rho_v_kg_m3 - 1.0 / sat.rho_l_kg_m3) * quality_gradient_1_m
     return mass_flux_kg_m2_s**2 * dv_dx
+
+
+# ---------------------------------------------------------------------------
+# Grant / Chisholm shell-side two-phase pressure-drop multiplier
+# ---------------------------------------------------------------------------
+# NOTE the name: this is DISTINCT from `chisholm_two_phase_multiplier(X, C)`
+# above, which is the Lockhart-Martinelli C-form for flow INSIDE tubes. The
+# function below is the shell-side crossflow form, keyed on bundle geometry.
+
+# Grant's B coefficients for shell-side two-phase crossflow, by flow path.
+# Source: Doo (2005), "A Modelling and Experimental Study of Evaporating
+# Two-Phase Flow on the Shellside of Shell-and-Tube Heat Exchangers", Univ. of
+# Strathclyde PhD, sec. 2.4, reporting Grant (1977) and Grant et al. (1986).
+# Held at docs/reference/Doo2005.pdf (+ .md text extraction).
+GRANT_SHELLSIDE_B = {
+    "segmental_baffle_vertical": 1.0,      # vertical up-and-down between segmental baffles
+    "ideal_bank_vertical_up": 3.0,
+    "ideal_bank_horizontal_rotated_square": 0.6,
+    "ideal_bank_horizontal_rotated_triangular": 0.35,
+    "ideal_bank_horizontal_square": 0.28,
+    "horizontal_side_to_side_spray": 0.75,      # spray / bubbly
+    "horizontal_side_to_side_stratified": 0.35,  # stratified / stratified-spray
+}
+
+
+def chisholm_gamma(*, p_Pa: float, fluid: str) -> float:
+    """Chisholm's physical-property coefficient Gamma.
+
+        Gamma^2 = (dp/dz)_all-vapour / (dp/dz)_all-liquid
+        Gamma   = sqrt(rho_l / rho_v) * (mu_v / mu_l)^0.1
+
+    Doo (2005) eq. 2.54.
+    """
+    sat = saturation_state(fluid, p_Pa)
+    return math.sqrt(sat.rho_l_kg_m3 / sat.rho_v_kg_m3) * (
+        sat.mu_v_Pa_s / sat.mu_l_Pa_s
+    ) ** 0.1
+
+
+def grant_shellside_B(*, flow_path: str = "segmental_baffle_vertical",
+                      gamma: float | None = None, n: float = 0.2) -> float:
+    """Grant's B coefficient for the shell-side two-phase multiplier.
+
+    ``flow_path`` selects from :data:`GRANT_SHELLSIDE_B`. The default,
+    ``"segmental_baffle_vertical"`` (B = 1.0), is the case matching this
+    codebase's segmentally-baffled geometry, where the coolant is driven
+    vertically up and down across the bundle between successive baffles.
+
+    ``flow_path=None`` falls back to Grant's general expression
+    (Doo 2005 eq. 2.59), for geometries with no tabulated value:
+
+        B = (2^(2-n) - 2) / (Gamma + 1)
+
+    B here is GEOMETRIC. Chisholm's in-tube B table keyed on (Gamma, mass flux)
+    is a different correlation family and must not be substituted.
+    """
+    if flow_path is not None:
+        try:
+            return GRANT_SHELLSIDE_B[flow_path]
+        except KeyError:
+            raise ValueError(
+                "unknown flow_path %r; expected one of %s"
+                % (flow_path, sorted(GRANT_SHELLSIDE_B))
+            ) from None
+    if gamma is None:
+        raise ValueError("gamma is required when flow_path is None")
+    return (2.0 ** (2.0 - n) - 2.0) / (gamma + 1.0)
+
+
+def grant_chisholm_shellside_multiplier(
+    *,
+    p_Pa: float,
+    quality: float,
+    fluid: str = "Water",
+    flow_path: str = "segmental_baffle_vertical",
+    n: float = 0.2,
+) -> float:
+    """Shell-side two-phase multiplier phi^2, referenced to the ALL-LIQUID drop.
+
+        phi^2 = 1 + (Gamma^2 - 1) * [ B x^((2-n)/2) (1-x)^((2-n)/2) + x^(2-n) ]
+
+    Verified against the primary source: Chisholm, "Pressure gradients due to
+    friction during the flow of evaporating two-phase mixtures in smooth tubes
+    and channels", Int. J. Heat Mass Transfer 16 (1973) 347-358, eq. (26)
+    (docs/reference/chisholm1973_2.pdf) -- identical, with q the dryness
+    fraction. Also given as Doo (2005) eq. 2.55. Multiply an all-liquid
+    shell-side pressure drop by this to get the two-phase drop. Recovers 1.0 at
+    x=0 and Gamma^2 at x=1 exactly.
+
+    ``n`` is the Reynolds exponent of the bundle's single-phase friction factor
+    (Grant fitted 0.462 on his test geometry; 0.2, the smooth-turbulent value,
+    is kept as the default here). ``flow_path`` selects B -- see
+    :func:`grant_shellside_B`.
+    """
+    x = min(max(float(quality), 0.0), 1.0)
+    gamma = chisholm_gamma(p_Pa=p_Pa, fluid=fluid)
+    B = grant_shellside_B(flow_path=flow_path, gamma=gamma, n=n)
+    e = (2.0 - n) / 2.0
+    return 1.0 + (gamma ** 2 - 1.0) * (
+        B * x ** e * (1.0 - x) ** e + x ** (2.0 - n)
+    )
+
+
+def chisholm_intube_B(*, gamma: float, mass_flux_kg_m2_s: float) -> float:
+    """Chisholm's B for flow INSIDE TUBES, from the Baroczy correlation.
+
+    Chisholm (1973), Int. J. Heat Mass Transfer 16, 347-358, eqs. (31)-(33)
+    (docs/reference/chisholm1973_2.pdf). Mass velocity G must be in kg/m2s::
+
+        Gamma < 9.5        B = 55 / sqrt(G)                 (31)
+        9.5 < Gamma < 28   B = 520 / (Gamma * sqrt(G))      (32)
+        28 < Gamma         B = 15000 / (Gamma^2 * sqrt(G))  (33)
+
+    **Do not use this for a baffled shell.** It is the in-tube family; the
+    shell-side multiplier takes a GEOMETRIC B instead -- see
+    :func:`grant_shellside_B`. Provided for tube-side work and for comparison.
+
+    The paper notes that for G > 1900 kg/m2s with Gamma < 9.5, eq. (31) returns
+    values below Chisholm's own earlier correlation.
+    """
+    G = max(float(mass_flux_kg_m2_s), 1.0e-12)
+    if gamma < 9.5:
+        return 55.0 / math.sqrt(G)
+    if gamma < 28.0:
+        return 520.0 / (gamma * math.sqrt(G))
+    return 15000.0 / (gamma ** 2 * math.sqrt(G))

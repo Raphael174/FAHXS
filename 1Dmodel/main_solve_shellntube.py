@@ -69,9 +69,14 @@ from .physics.liquid_flow.hx_adapters import solve_shelltube_shellside_liquid_fr
 from .physics.liquid_flow.dispatch import evaluate_coolant_closure
 from .physics.liquid_flow.correlations import (
     bergles_rohsenow_onb_wall_superheat,
+    grant_chisholm_shellside_multiplier,
     saturation_state,
 )
-from .physics.liquid_flow.regime import real_fluid_state_ph
+from .physics.liquid_flow.regime import (
+    PSEUDO_CRITICAL_BAND_FRACTION,
+    pseudo_critical_temperature,
+    real_fluid_state_ph,
+)
 from .physics.liquid_flow.coolprop_state_cache import coolprop_fluid_string, get_cached_state
 from .physics.liquid_flow.chf import chf_regime
 from .mechanical.geometry.shelltube_geometry import compute_bell_delaware_geometry
@@ -174,6 +179,21 @@ class shellntube_solver:
         # physical inlet temperature (a neutral "wall ~ bulk" start, same
         # cold-start convention as q_w/dp being seeded at zero).
         self._shell_Tw_lagged = np.full(self.N, float(self.coolantProp.T_in))
+        # Per-node latch for the supercritical property-ratio closure (see
+        # _needs_property_ratio_closure). One-way: once a node's bulk->wall
+        # interval has reached the pseudo-critical band it keeps that closure
+        # for the rest of the solve, so the choice cannot chatter while the
+        # lagged wall temperature is still climbing off its cold seed.
+        self._sc_latch = np.zeros(self.N, dtype=bool)
+        # Count of supercritical nodes whose h came from Bell-Delaware instead
+        # of a property-ratio closure (diagnostic; reset each solve).
+        self._sc_bell_fallback_nodes = 0
+        # Bell-Delaware baffle-leakage ratio r_lm = (S_sb+S_tb)/S_m. The
+        # correlation is fitted for r_lm up to roughly 1; beyond that its
+        # leakage corrections (J_l on h, R_l on dp) run far outside the fitted
+        # range. Computed once here so print_summary can flag it.
+        _Sm = self.geom["S_m"]
+        self._bell_r_lm = (self.geom["S_sb"] + self.geom["S_tb"]) / _Sm if _Sm > 0 else float("inf")
         # Worst (largest) Bergles-Rohsenow ONB wall-superheat margin seen on
         # the shell side across all sweeps - same diagnostic as main_solve.py.
         self._shell_onb_max_margin = float("-inf")
@@ -289,6 +309,7 @@ class shellntube_solver:
         P_tube_o = np.pi * self.stp.D_tube_outer
 
         dQ = np.zeros(N); T_g_a = np.zeros(N); T_wg_a = np.zeros(N); T_wc_a = np.zeros(N)
+        rho_g_a = np.zeros(N); U_g_a = np.zeros(N); mach_g_a = np.zeros(N)
         h_g_a = np.zeros(N); q_w_shell_a = np.zeros(N); chf_margin_a = np.full(N, np.nan)
         p_g_a = np.zeros(N); h_c_a = np.zeros(N); dp_shell_a = np.zeros(N)
         for i in range(N):
@@ -301,6 +322,16 @@ class shellntube_solver:
                 g = self.gas_phase
                 cp_g = g.cp; mu_g = g.viscosity; k_g = g.thermal_conductivity; rho_g = g.density
             U_g = self.mdot_tube / (rho_g * self.A_tube_i)
+            # Tube-side Mach, recorded per node. The combustor is designed for
+            # Mach_g below ~0.3; above that the explicit gas pressure march
+            # (eq. dp_g/dx = -f rho U^2 / 2D) drives p_g toward zero, density
+            # collapses and the march becomes meaningless -- so this is a
+            # validity indicator, not just a diagnostic. gamma from the local
+            # cp and the mixture gas constant.
+            R_mix = 8314.462618 / self.gas_phase.mean_molecular_weight
+            gamma_g = cp_g / max(cp_g - R_mix, 1.0)
+            a_g = np.sqrt(max(gamma_g * R_mix * T_g, 1.0e-9))
+            rho_g_a[i] = rho_g; U_g_a[i] = U_g; mach_g_a[i] = U_g / a_g
             Re_g = rho_g * U_g * self.D_tube_i / mu_g
             Pr_g = cp_g * mu_g / k_g
             x_local = (i + 0.5) * dx
@@ -324,6 +355,7 @@ class shellntube_solver:
                 p_local=(liquid_state["p"][i] if (liquid_state is not None and "p" in liquid_state) else None),
                 wall_temp_K=self._shell_Tw_lagged[i],
                 x_over_D=x_over_D_shell,
+                node_index=i,
             )
             chf_margin_a[i] = self._last_shell_chf_margin if self._last_shell_chf_margin is not None else np.nan
             h_c_a[i] = h_c
@@ -376,11 +408,153 @@ class shellntube_solver:
         self._shell_dp_lagged = dp_shell_a
         self._shell_Tw_lagged = T_wc_a
         return dict(dQ=dQ, T_g=T_g_a, T_wg=T_wg_a, T_wc=T_wc_a, h_g=h_g_a, h_c=h_c_a, p_g=p_g_a,
+                   rho_g=rho_g_a, U_g=U_g_a, mach_g=mach_g_a,
                    q_w_shell=q_w_shell_a, chf_margin=chf_margin_a, dp_shell=dp_shell_a,
                    T_g_out=T_g, p_g_out=p_g)
 
+    # Sieder-Tate (mu_b/mu_w)^0.14 is a mild correction fitted for moderate
+    # property variation. Clamp the ratio so a pathological wall state (e.g. the
+    # cold-start lagged wall temperature on sweep 0) cannot distort h_shell;
+    # the limits below are far outside any converged physical ratio.
+    MU_RATIO_LIMITS = (0.25, 4.0)
+
+    def _shell_mu_ratio(self, cool, cool_cp, mu_bulk, wall_temp_K, p_Pa):
+        """Bulk-to-wall viscosity ratio for Bell-Delaware's Sieder-Tate term.
+
+        Bell-Delaware carries a (mu_b/mu_w)^0.14 property correction that was
+        previously left at its neutral default of 1.0, i.e. switched off. The
+        coolant-side wall temperature needed to evaluate it is already
+        available as ``self._shell_Tw_lagged`` (one sweep behind, same lagged
+        pattern as the boiling heat-flux and pressure-drop terms). Returns 1.0
+        — the previous behaviour — whenever the wall state is unusable.
+        """
+        if wall_temp_K is None:
+            return 1.0
+        T_w = float(wall_temp_K)
+        if not np.isfinite(T_w) or T_w <= 0.0:
+            return 1.0
+        try:
+            if self._liquid_mode:
+                mu_w = get_cached_state(cool_cp).wall_state_tp(T_w, p_Pa).viscosity()
+            else:
+                mu_w = self._thermo.viscosity(cool, T_w, p_Pa)
+        except (ValueError, RuntimeError):
+            return 1.0
+        if not np.isfinite(mu_w) or mu_w <= 0.0:
+            return 1.0
+        lo, hi = self.MU_RATIO_LIMITS
+        return float(min(max(mu_bulk / mu_w, lo), hi))
+
+    def _shell_bell_delaware(self, cool, cool_cp, p_Pa, T_bulk, h_bulk, wall_temp_K):
+        """Evaluate Bell-Delaware at one node with local properties.
+
+        Properties come from a (p, h) flash in liquid mode (phase-consistent)
+        and a (T, p) lookup in gas mode, matching each mode's state
+        representation. Returns the full Bell-Delaware result dict.
+        """
+        if self._liquid_mode:
+            flashed = get_cached_state(cool_cp).flash_ph(p_Pa, h_bulk)
+            rho = flashed.rhomass()
+            try:
+                mu = flashed.viscosity(); k = flashed.conductivity(); cp = flashed.cpmass()
+            except (ValueError, RuntimeError):
+                mu = k = cp = float("nan")
+            if not all(np.isfinite(v) and v > 0.0 for v in (mu, k, cp)):
+                # Inside the two-phase dome CoolProp's transport properties and
+                # c_p are undefined or pathological (c_p can come back negative,
+                # which would make Pr negative and Pr^(-2/3) COMPLEX). Fall back
+                # to saturated-liquid transport properties while keeping the
+                # homogeneous two-phase density, which is what actually carries
+                # the pressure drop through vaporization. The h_shell this
+                # returns is NOT meaningful two-phase — callers take only
+                # dp_shell from a two-phase node, h comes from the boiling
+                # closure.
+                sat = saturation_state(cool_cp, p_Pa)
+                mu, k, cp = sat.mu_l_Pa_s, sat.k_l_W_m_K, sat.cp_l_J_kg_K
+        else:
+            rho = self._thermo.density(cool, T_bulk, p_Pa)
+            mu = self._thermo.viscosity(cool, T_bulk, p_Pa)
+            k = self._thermo.conductivity(cool, T_bulk, p_Pa)
+            cp = self._thermo.cp(cool, T_bulk, p_Pa)
+        G_s = self.coolantProp.mass_flow_c / self.geom["S_m"]
+        Re_s = self.stp.D_tube_outer * G_s / mu
+        geom = dict(self.geom); geom["rho_s"] = rho
+        mu_ratio = self._shell_mu_ratio(cool, cool_cp, mu, wall_temp_K, p_Pa)
+        return bell_delaware_shell(
+            geom, Re_s=Re_s, Pr_s=cp * mu / k, k_s=k, cp_s=cp, mu_s=mu,
+            mdot_s=self.coolantProp.mass_flow_c, mu_ratio=mu_ratio,
+            corrCoeffs=self.corrCoeffs)
+
+    def _shell_bell_delaware_saturated_liquid(self, cool_cp, p_Pa, wall_temp_K):
+        """Bell-Delaware evaluated with ALL-LIQUID saturated properties.
+
+        This is the reference drop that the Chisholm two-phase multiplier scales
+        (phi^2 is defined relative to the all-liquid pressure gradient), so the
+        full coolant mass flow is used with saturated-liquid density and
+        transport properties.
+        """
+        sat = saturation_state(cool_cp, p_Pa)
+        G_s = self.coolantProp.mass_flow_c / self.geom["S_m"]
+        Re_s = self.stp.D_tube_outer * G_s / sat.mu_l_Pa_s
+        geom = dict(self.geom); geom["rho_s"] = sat.rho_l_kg_m3
+        mu_ratio = self._shell_mu_ratio(
+            self.coolantProp.coolant, cool_cp, sat.mu_l_Pa_s, wall_temp_K, p_Pa)
+        return bell_delaware_shell(
+            geom, Re_s=Re_s, Pr_s=sat.pr_l, k_s=sat.k_l_W_m_K, cp_s=sat.cp_l_J_kg_K,
+            mu_s=sat.mu_l_Pa_s, mdot_s=self.coolantProp.mass_flow_c,
+            mu_ratio=mu_ratio, corrCoeffs=self.corrCoeffs)
+
+    def _shell_bell_delaware_h(self, cool, cool_cp, p_Pa, T_bulk, h_bulk, wall_temp_K):
+        """Bell-Delaware h only (supercritical fallback path — dp comes from the
+        local friction gradient so the pressure march stays on one model)."""
+        r = self._shell_bell_delaware(cool, cool_cp, p_Pa, T_bulk, h_bulk, wall_temp_K)
+        self._last_bell = r
+        return r["h_shell"]
+
+    def _needs_property_ratio_closure(self, fluid_cp, p_Pa, T_bulk, T_wall, node_index):
+        """Does this supercritical node actually need the property-ratio closure?
+
+        Supercritical pressure alone is NOT sufficient reason to leave
+        Bell-Delaware. What the McCarthy-Wolf / Taylor property-ratio closures
+        correct for is the steep property variation that appears when the
+        bulk-to-wall temperature interval reaches the pseudo-critical region
+        — the smeared-out remnant of the latent-heat spike. Away from that
+        region a supercritical fluid is an ordinary single-phase fluid, and the
+        cross-flow-calibrated Bell-Delaware correlation (with its Sieder-Tate
+        term, see ``_shell_mu_ratio``) is the better-matched model for a
+        baffled bundle.
+
+        Concretely: N2 at 88 bar has T_pc ~ 148 K with a bulk of 100-124 K and
+        a wall reaching ~164 K, so the pseudo-critical transition sits inside
+        the thermal boundary layer and the property-ratio closure is
+        warranted. Helium at 80 bar has T_pc ~ 11 K against a 300-1400 K
+        march — supercritical by pressure, but 26-120x above any critical
+        anomaly, with cp flat to ~0.1%. Before this test, a Helium case run
+        with ``coolant_model="equilibrium_liquid"`` would have been routed to a
+        supercritical closure purely because quality is NaN there.
+
+        Latched per node (one-way) so the selection cannot oscillate while the
+        lagged wall temperature is still rising off its cold seed.
+        """
+        if node_index is not None and self._sc_latch[node_index]:
+            return True
+        try:
+            T_pc = pseudo_critical_temperature(fluid_cp, p_Pa)
+        except ValueError:
+            return True                      # not supercritical: keep prior behaviour
+        band = PSEUDO_CRITICAL_BAND_FRACTION * T_pc
+        lo = hi = float(T_bulk)
+        if T_wall is not None and np.isfinite(T_wall):
+            lo = min(lo, float(T_wall))
+            hi = max(hi, float(T_wall))
+        # Does [lo, hi] reach the pseudo-critical band around T_pc?
+        needed = (hi >= T_pc - band) and (lo <= T_pc + band)
+        if needed and node_index is not None:
+            self._sc_latch[node_index] = True
+        return needed
+
     def _shell_h_at(self, T_shell_local, h_c_enthalpy=None, quality_local=None, q_w_lagged=0.0,
-                    p_local=None, wall_temp_K=None, x_over_D=None):
+                    p_local=None, wall_temp_K=None, x_over_D=None, node_index=None):
         """Shell-side coolant-side heat transfer coefficient at one axial node.
 
         Gas mode (unchanged): Bell-Delaware baffled cross-flow HTC, properties
@@ -435,13 +609,27 @@ class shellntube_solver:
         p_c = p_local if p_local is not None else self.coolantProp.p_in
 
         self._last_shell_sc_info = None
-        # quality_local is NaN at supercritical pressure (no dome, undefined
-        # quality - see regime.supercritical_state_ph) - route it through
-        # evaluate_coolant_closure exactly like the subcritical two-phase dome,
-        # since that function already dispatches correctly on both internally.
-        if self._liquid_mode and quality_local is not None and (
-            (0.0 <= quality_local <= 1.0) or np.isnan(quality_local)
-        ):
+        # Regime dispatch. Two distinct reasons to leave Bell-Delaware:
+        #   - inside the two-phase dome, where it has no boiling physics at all;
+        #   - at supercritical pressure ONLY where the bulk->wall interval
+        #     actually reaches the pseudo-critical region (see
+        #     _needs_property_ratio_closure). Supercritical pressure by itself
+        #     is not sufficient: this used to be gated purely on the
+        #     coolantProp.coolant_model string, so which closure a fluid got was
+        #     a configuration artefact rather than a statement about its state.
+        #
+        # The regime test governs the HTC ONLY. The pressure march always uses
+        # Bell-Delaware (see _shell_dp_node), never the closure's own gradient.
+        use_liquid_closure = False
+        supercritical_bell_fallback = False
+        if self._liquid_mode and quality_local is not None:
+            if 0.0 <= quality_local <= 1.0:
+                use_liquid_closure = True
+            elif np.isnan(quality_local):
+                use_liquid_closure = True
+                supercritical_bell_fallback = not self._needs_property_ratio_closure(
+                    cool_cp, p_c, T_shell_local, wall_temp_K, node_index)
+        if use_liquid_closure:
             mass_flux = self.coolantProp.mass_flow_c / self.geom["S_m"]
             closure = evaluate_coolant_closure(
                 coolant_prop=self.coolantProp,
@@ -461,32 +649,52 @@ class shellntube_solver:
                 x_over_D=x_over_D,
             )
             self._last_shell_chf_margin = closure.chf_margin
-            self._last_bell = None
             if closure.regime is not None:
                 self._last_shell_sc_info = dict(
                     regime=closure.regime, closure_name=closure.closure_name,
                     htd_risk=closure.htd_risk, extrapolation_report=closure.extrapolation_report,
                 )
-            return closure.htc_W_m2_K, closure.dpdz_friction_Pa_m * self.dx
+            # Pressure drop comes from Bell-Delaware, NOT from the closure's own
+            # gradient. Gungor-Winterton/MSH and the supercritical registry are
+            # straight-TUBE correlations: they model axial flow along one
+            # L_tube-long channel with wall skin friction. The real shell-side
+            # path crosses the bundle N_baffles+1 times, each crossing traversing
+            # ~D_shell through N_tcc tube rows -- roughly 7.5x the path length on
+            # this geometry, with form drag over ~190 row crossings rather than
+            # skin friction. Measured against Bell-Delaware the straight-tube
+            # gradient under-predicts by ~25x for both water and N2, which is far
+            # too large to treat as an acceptable extrapolation.
+            r = self._shell_bell_delaware(
+                cool, cool_cp, p_c, T_shell_local, h_c_enthalpy, wall_temp_K)
+            self._last_bell = r
+            if 0.0 <= quality_local <= 1.0:
+                # Two-phase: reference the drop to the ALL-LIQUID Bell-Delaware
+                # value and scale by the Chisholm multiplier, rather than
+                # evaluating Bell-Delaware at the homogeneous mixture density.
+                # The multiplier is the standard separated-flow treatment and
+                # recovers both limits exactly (phi^2 -> 1 at x=0, -> Gamma^2 at
+                # x=1); the homogeneous-density shortcut it replaces ran 0-26%
+                # high across the dome. See chisholm_B for the provenance
+                # caveat on its B coefficient.
+                r_liq = self._shell_bell_delaware_saturated_liquid(cool_cp, p_c, wall_temp_K)
+                phi2 = grant_chisholm_shellside_multiplier(
+                    p_Pa=p_c, quality=quality_local, fluid=cool_cp,
+                    flow_path="segmental_baffle_vertical",
+                )
+                dp_node = r_liq["dp_shell"] * phi2 / self.N
+            else:
+                dp_node = r["dp_shell"] / self.N
+            if supercritical_bell_fallback:
+                # Supercritical but far from the pseudo-critical region: the
+                # property-ratio correction has nothing to correct, so take h
+                # from the cross-flow-calibrated correlation as well.
+                self._sc_bell_fallback_nodes += 1
+                return r["h_shell"], dp_node
+            return closure.htc_W_m2_K, dp_node
 
         self._last_shell_chf_margin = None
-        if self._liquid_mode:
-            flashed = get_cached_state(cool_cp).flash_ph(p_c, h_c_enthalpy)
-            rho = flashed.rhomass()
-            mu = flashed.viscosity()
-            k = flashed.conductivity()
-            cp = flashed.cpmass()
-        else:
-            rho = self._thermo.density(cool, T_shell_local, p_c)
-            mu = self._thermo.viscosity(cool, T_shell_local, p_c)
-            k = self._thermo.conductivity(cool, T_shell_local, p_c)
-            cp = self._thermo.cp(cool, T_shell_local, p_c)
-        Pr = cp * mu / k
-        G_s = self.coolantProp.mass_flow_c / self.geom["S_m"]
-        Re_s = self.stp.D_tube_outer * G_s / mu
-        geom = dict(self.geom); geom["rho_s"] = rho
-        r = bell_delaware_shell(geom, Re_s=Re_s, Pr_s=Pr, k_s=k, cp_s=cp, mu_s=mu,
-                                mdot_s=self.coolantProp.mass_flow_c, corrCoeffs=self.corrCoeffs)
+        r = self._shell_bell_delaware(
+            cool, cool_cp, p_c, T_shell_local, h_c_enthalpy, wall_temp_K)
         self._last_bell = r
 
         if self._liquid_mode and q_w_lagged > 0.0 and quality_local is not None and quality_local < 0.0:
@@ -558,6 +766,9 @@ class shellntube_solver:
         # EOS-valid (state, h, p) for the remainder of the march instead of
         # crashing.
         last_valid = {"state": None, "h": None, "p": None}
+        rho_arr = np.zeros(N)
+        dp_acc_arr = np.zeros(N)
+        G_shell = self.coolantProp.mass_flow_c / self.geom["S_m"]
 
         def _advance(h_cur, p_cur, idx):
             try:
@@ -584,8 +795,33 @@ class shellntube_solver:
             p_arr[idx] = p_cur
             quality[idx] = state.quality
             void[idx] = state.void_fraction
+            rho_arr[idx] = state.rho_kg_m3
             h_next = h_cur + dQ_total[idx] / self.coolantProp.mass_flow_c
-            p_next = max(p_cur - self._shell_dp_lagged[idx], 1.0)
+            p_after_friction = max(p_cur - self._shell_dp_lagged[idx], 1.0)
+
+            # --- momentum (acceleration) pressure drop -------------------
+            # As the coolant vaporizes its density collapses and it must
+            # accelerate, which costs pressure over and above wall friction.
+            # From the momentum balance across the cell,
+            #     dp_acc = G^2 * [ (1/rho)_{i+1} - (1/rho)_i ]
+            # (homogeneous form: the separated-flow momentum term
+            #  x^2/(alpha*rho_v) + (1-x)^2/((1-alpha)*rho_l) reduces to 1/rho
+            #  for the homogeneous void fraction this state closure returns --
+            #  a drift-flux alpha would be needed to go beyond that).
+            # Previously omitted entirely; worth ~3 bar of the ~9 bar total on
+            # the water design point, where rho falls 1000 -> 29 kg/m3.
+            dp_acc = 0.0
+            try:
+                state_next = real_fluid_state_ph(cool_cp, p_after_friction, h_next)
+                if np.isfinite(state_next.rho_kg_m3) and state_next.rho_kg_m3 > 0.0:
+                    dp_acc = G_shell ** 2 * (1.0 / state_next.rho_kg_m3
+                                             - 1.0 / state.rho_kg_m3)
+            except ValueError:
+                dp_acc = 0.0            # past the EOS ceiling: friction only
+            if not np.isfinite(dp_acc):
+                dp_acc = 0.0
+            dp_acc_arr[idx] = dp_acc
+            p_next = max(p_after_friction - dp_acc, 1.0)
             return h_next, p_next
 
         h_cur, p_cur = h_in, p_in
@@ -599,7 +835,10 @@ class shellntube_solver:
             T_out = real_fluid_state_ph(cool_cp, p_cur, h_cur).T_K
         except ValueError:
             T_out = last_valid["state"].T_K
-        return T, T_out, dict(h=h_arr, quality=quality, void=void, p=p_arr, h_out=h_cur, p_out=p_cur)
+        return T, T_out, dict(h=h_arr, quality=quality, void=void, p=p_arr,
+                              rho=rho_arr, dp_accel=dp_acc_arr,
+                              dp_accel_total=float(np.sum(dp_acc_arr)),
+                              h_out=h_cur, p_out=p_cur)
 
     # ------------------------------------------------------------------
     def solve(self, max_sweeps=25, omega=0.5, tol=0.05, verbose=True):
@@ -607,6 +846,8 @@ class shellntube_solver:
         field against the tube-side duty field it produces."""
         N = self.N
         liquid_state = None
+        self._sc_latch[:] = False        # fresh closure selection per solve
+        self._sc_bell_fallback_nodes = 0
         if self._liquid_mode:
             # coolantProp.T_out is not meaningful for
             # coolant_model="equilibrium_liquid" (same reason the helical
@@ -746,6 +987,15 @@ class shellntube_solver:
                         f"acceleration criteria) -- deteriorated-HTC magnitude is NOT modeled; "
                         f"treat these nodes as outside the validated envelope."
                     )
+        if self._sc_bell_fallback_nodes > 0:
+            print(f"  Supercritical nodes taking Bell-Delaware h (far from T_pc, no property-"
+                  f"ratio correction warranted): {self._sc_bell_fallback_nodes} evaluation(s)")
+        if self._bell_r_lm > 1.0:
+            print(f"  WARNING: Bell-Delaware baffle-leakage ratio r_lm = {self._bell_r_lm:.2f} "
+                  f"((S_sb+S_tb)/S_m) exceeds the correlation's fitted range (r_lm <~ 1) -- the "
+                  f"leakage corrections J_l (on h) and R_l (on dp) are extrapolated. Shell-side "
+                  f"pressure drop is especially untrustworthy here: R_l crushes the cross/window "
+                  f"terms, leaving the uncorrected end-zone term dominant.")
         if hasattr(self, "collapse_margin"):
             print(f"  external-pressure collapse margin = {self.collapse_margin:.3f} "
                   f"(dP/P_cr; <1 = safe)")

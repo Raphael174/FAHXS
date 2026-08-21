@@ -107,9 +107,23 @@ def compute_bell_delaware_geometry(
     # --- leakage areas ---
     Ltb = clearance_tube_baffle
     Lsb = clearance_baffle_shell
+    # Tube-to-baffle leakage: exact annular clearance area per tube, counted
+    # only over the tubes that actually pass through the baffle plate (1 - Fw).
+    # Matches Serth "Process Heat Transfer" eq. 6.x; note Hellborg (2017) eq. 49
+    # writes 0.5*pi*Do*Ltb*N*(1+Fc), which is 2x this because (1-Fw) = (1+Fc)/2.
+    # Ours is kept: it counts tubes in the baffle and retains the Ltb^2 term.
     S_tb = (np.pi / 4.0) * ((Do + Ltb) ** 2 - Do ** 2) * N_tubes * (1.0 - Fw)
-    S_sb = Ds * Lsb / 2.0 * (np.pi - 0.5 * theta_ds) / np.pi * np.pi  # = Ds*Lsb/2*(pi - 0.5 theta_ds)
-    S_sb = Ds * Lsb / 2.0 * (np.pi - 0.5 * theta_ds)
+    # Shell-to-baffle leakage: the diametral gap Lsb over the arc where the
+    # baffle edge follows the shell, i.e. the full circumference minus the
+    # baffle-cut chord arc. Arc length = (Ds/2)*(2*pi - theta_ds), so
+    #     S_sb = Lsb * (Ds/2) * (2*pi - theta_ds) = Ds*Lsb*(pi - theta_ds/2).
+    # Corrected 2026-08-20: this previously carried a spurious extra factor of
+    # 1/2, making S_sb half its physical value. Confirmed against the
+    # first-principles gap-times-arc derivation above and against Hellborg
+    # (2017) eq. 47, which agree with each other. Effect on the current
+    # geometry: S_sb 1.218 -> 2.436 cm2, r_lm 6.51 -> 6.92, r_s 0.065 -> 0.121
+    # (r_lm stays far outside Bell-Delaware's fitted range either way).
+    S_sb = Ds * Lsb * (np.pi - 0.5 * theta_ds)
 
     # --- bundle bypass area ---
     S_b = B * (Ds - D_otl)

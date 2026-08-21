@@ -31,20 +31,46 @@ search over `mass_flow_g` up to ~0.42 kg/s and `mass_flow_c` up to ~0.95
 kg/s.
 
 **Chosen design point**: `mass_flow_g=0.39 kg/s`, `mass_flow_c=0.86 kg/s`,
-`p_in=81 bar`. Result: `Q_tot=2563 kW` (101% of the 2530 kW target --
-matched, not just approached), `T_c_out=656.5 K` (still short of 700 K --
-see below), `p_out=76.30 bar` (on the ~75 bar target), `quality_out=1.23`
+`p_in=86.5 bar`. Result: `Q_tot=2558 kW` (101% of the 2530 kW target --
+matched, not just approached), `T_c_out=654.1 K` (still short of 700 K --
+see below), `p_out=75.45 bar` (on the ~75 bar target), `quality_out=1.23`
 (genuinely superheated single-phase steam, confirmed via
 `real_fluid_state_ph` on the converged outlet (p,h) -- quality > 1 is this
 codebase's convention for post-dome superheat, not clamped to [0,1]),
-`Vdot_out=29.96 L/s` (essentially exact match to the 30 L/s target),
-`T_wg_max=1070.9 K` (well inside the ~1500 K allowance, though still above
-the material's characterized-data ceiling -- flagged, not hidden).
-`T_c_out=656.5 K` remains short of 700 K: pushing further needs even less
+`Vdot_out=30.17 L/s` (on the 30 L/s target), `T_wg_max=1024.6 K` -- inside
+INCO718's characterized-data range (1033.15 K), so the ~1500 K allowance is
+not being drawn on at all.
+
+`T_c_out=654.1 K` remains short of 700 K: pushing further needs even less
 coolant mass flow, which now trades against the *duty and volumetric-flow*
 match instead of the wall ceiling (confirmed by sweep: matching Q and Vdot
 simultaneously pins `mass_flow_c` near 0.86 kg/s at this `mass_flow_g`) --
 a different, still-real, trade, not a stale constraint.
+
+**Coolant mass flow vs. the 2.5-3 kg/s ceiling** (given 2026-08-20): 0.86
+kg/s sits well under it, so the constraint is satisfied with margin. It is
+worth recording *why* the flow must be this low rather than at the ceiling:
+producing steam at all requires enough enthalpy per unit mass to cross the
+dome. Swept at fixed `mass_flow_g=0.39`, `p_in=81 bar`:
+
+    mass_flow_c   Q_tot      T_c_out   quality_out   Vdot_out
+      0.86 kg/s   2565 kW    653 K      1.22          32.2 L/s   <- superheated steam
+      1.50 kg/s   2745 kW    563 K      0.45          18.5 L/s   <- wet two-phase
+      2.50 kg/s   2811 kW    555 K     -0.03           3.3 L/s   <- still subcooled LIQUID
+
+At 2.5 kg/s the coolant never even reaches saturation. Raising the flow
+toward the ceiling raises total duty slightly but destroys the steam outlet,
+so the ceiling is not a target to approach -- it is simply a bound this
+point respects.
+
+**p_in raised 81 -> 86.5 bar (2026-08-20)** in two steps, as the shell-side
+pressure-drop model was corrected. First, the march was moved off the
+straight-tube friction gradient onto Bell-Delaware (the straight-tube form
+under-predicts by ~25x on this geometry). Second, the momentum
+(acceleration) term was added: as the coolant vaporizes its density falls
+1000 -> 29 kg/m3 and it must accelerate, which costs
+dp_acc = G^2 * delta(1/rho). That term alone is **2.99 bar of the 11.05 bar
+total (26%)** and had been omitted entirely.
 
 Run: `python -m hps_combustor.validation.friday_shelltube_water`
 """
@@ -69,9 +95,9 @@ from ..result_package import package_steady_run
 
 # Design point found by search (see module docstring).
 MASS_FLOW_G = 0.39   # kg/s, hot gas (diesel/O2) -- free variable, tuned for target power
-MASS_FLOW_C = 0.86   # kg/s, water coolant -- free variable, tuned for outlet Vdot target
+MASS_FLOW_C = 0.86   # kg/s, water coolant -- free variable; well under the 2.5-3 kg/s ceiling
 T_IN_K = 300.0
-P_IN_PA = 81.0e5
+P_IN_PA = 86.5e5     # raised again after the acceleration dp term was added
 INCO718_DATA_CEILING_K = 1033.15  # R02_INCO718["x"] characterized upper bound
 T_WG_ALLOWANCE_K = 1500.0  # confirmed 2026-08-19: acceptable even past the data ceiling
 VDOT_TARGET_LS = 30.0  # target outlet volumetric flow rate, L/s (delivered-gas basis)

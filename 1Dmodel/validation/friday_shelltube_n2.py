@@ -1,41 +1,72 @@
-"""Shell-and-tube (Inconel 718) steady design-point search — LN2/supercritical
-N2 coolant.
+"""Shell-and-tube (Inconel 718) steady design point - LN2/supercritical N2.
 
-Target (given 2026-08-19, updated 2026-08-19, due 2026-08-21): from 100 K
-inlet, find the operating point on the CURRENT shell-and-straight-tube
-Inconel 718 design delivering ~0.9 MW at ~75 bar exit pressure, with the
-coolant flow rate constrained by a target ~30 L/s volumetric flow rate
-MEASURED AT THE OUTLET (delivered-gas basis, same convention as the water
-case in `friday_shelltube_water.py` -- confirmed via AskUserQuestion).
+Target: from a 100 K inlet, deliver of order 0.9 MW at ~75 bar exit pressure
+on the CURRENT shell-and-straight-tube Inconel 718 design.
 
-N2's critical pressure is ~34 bar; a ~75 bar exit-pressure target is
-inherently supercritical for N2 at any inlet pressure that can plausibly
-reach it with a physically small pressure drop, so `quality` reports NaN
-throughout (confirmed, not a gap) -- this reads as "cryogenic-N2-supplied,
-operating supercritically" rather than "boiling LN2", so there is no
-separate two-phase-outlet constraint to satisfy here the way there is for
-water (N2 never has an "is it real steam" question -- it's a dense
-supercritical fluid at the outlet either way).
+**Coolant mass flow is now a FIXED INPUT, not a free variable** (given
+2026-08-20): `mass_flow_c = 1.916 kg/s`, set by independent system needs
+outside this model. Only `mass_flow_g` and `p_in` are tuned here. This
+supersedes the earlier 17.5 kg/s point, which had been found by treating the
+coolant flow as free in order to chase a 30 L/s outlet volumetric target.
 
-Found by direct search: at the ORIGINAL point (`mass_flow_c=9.7 kg/s`,
-`p_in=80 bar`) the outlet density is high enough (449.9 kg/m3, T_c_out=139K)
-that the outlet volumetric flow is only 21.6 L/s -- short of the 30 L/s
-target. Increasing `mass_flow_c` raises `Vdot_out` (lower-density,
-higher-T_c_out state) but also increases the shell-side pressure drop
-sharply (Bell-Delaware dP scales close to mdot_c^1.8 in this regime,
-confirmed by sweep from 9.7-30 kg/s), driving `p_out` well under the 75 bar
-target unless `p_in` is raised to compensate. Unlike the water case, N2
-is NOT wall-temperature-constrained here -- `T_wg_max` stays under ~520 K
-across the whole sweep (INCO718's characterized ceiling is 1033 K), so
-there is no material-limit conflict to trade against; `mass_flow_c` and
-`p_in` can be tuned freely against the volumetric-flow and pressure targets
-alone.
+N2's critical pressure is ~34 bar, so any operating point able to hold ~75
+bar at exit is supercritical throughout and `quality` reports NaN (confirmed,
+not a gap). This reads as "cryogenic-N2-supplied, operating supercritically"
+rather than "boiling LN2": there is no two-phase-outlet constraint to satisfy
+the way there is for water.
 
-**Chosen design point**: `mass_flow_g=0.115 kg/s`, `mass_flow_c=17.5 kg/s`,
-`p_in=88 bar`. Result: `Q_tot=942.5 kW` (close to the ~900 kW target),
-`T_c_out=124.3 K`, `p_out=76.10 bar` (on the ~75 bar target),
-`Vdot_out=30.0 L/s` (on target), `T_wg_max=475.0 K` (far under the material
-ceiling), supercritical throughout (`quality` NaN).
+**Chosen design point**: `mass_flow_g=0.125 kg/s`, `mass_flow_c=1.916 kg/s`
+(fixed), `p_in=101.5 bar`. Result: `Q_tot=918.4 kW` (on the ~0.9 MW target),
+`T_c_out=400.7 K`, `p_out=73.86 bar` (on the ~75 bar target),
+`Vdot_out=31.7 L/s`, `T_wg_max=1032.2 K` -- 0.95 K inside INCO718's
+characterized-data ceiling of 1033.15 K, and far inside the ~1500 K
+allowance confirmed 2026-08-19. Supercritical throughout.
+
+That wall-temperature margin is thin. Backing `mass_flow_g` off to 0.120
+kg/s at `p_in=101.0 bar` trades 5% of the duty for 13 K of wall margin:
+Q_tot=867 kW, p_out=75.65 bar, T_wg_max=1019.6 K. Use that point instead if
+the characterized-data boundary matters more than hitting 0.9 MW exactly.
+
+**The character of this case changed with the lower coolant flow.** At 17.5
+kg/s the N2 stayed cryogenic end to end (T_c_out = 124 K, liquid-like dense
+fluid). At 1.916 kg/s the same duty is carried by roughly a ninth of the
+mass, so the coolant leaves at **402 K** -- warm, gas-like, and no longer
+cryogenic. Anything downstream that assumed a cold N2 outlet needs
+rechecking against this point. It also pushes T_wg_max from 475 K up to
+1031 K, because less coolant mass flow means a hotter wall for the same duty.
+
+**p_in is 101.5 bar, not ~88 bar**, for two reasons that compound: the
+shell-side pressure-drop model was corrected (see below), and the coolant
+leaves hot and therefore much less dense, so it accelerates through the
+bundle and the drop through the back half of the exchanger is large
+(27.6 bar total here, of which 6.96 bar -- 23% -- is the momentum
+/acceleration term that had previously been omitted altogether).
+
+Sensitivity to `mass_flow_g` at the fixed coolant flow, `p_in` retuned each
+time to hold the exit near 75 bar:
+
+    mass_flow_g   Q_tot     T_c_out   p_out    T_wg_max
+      0.070 kg/s   429 kW    189 K     74.8 b    858 K
+      0.090 kg/s   588 kW    249 K     71.2 b    929 K
+      0.115 kg/s   819 kW    354 K     75.0 b   1005 K
+      0.125 kg/s   922 kW    402 K     74.6 b   1031 K   <- chosen
+      0.130 kg/s   969 kW    425 K     74.6 b   1042 K
+
+Duty and wall temperature rise together; 0.125 kg/s is the point that meets
+the 0.9 MW target while still sitting inside the characterized material data.
+
+**Shell-side pressure drop model (corrected 2026-08-20)**: the pressure march
+now uses Bell-Delaware rather than the closure's own friction gradient. The
+Gungor-Winterton/MSH and supercritical-registry gradients are straight-TUBE
+correlations - they model axial flow along one L_tube-long channel with wall
+skin friction, whereas the real shell-side path crosses the bundle
+N_baffles+1 times through N_tcc rows each: about 7.5x the path length on this
+geometry, with form drag rather than skin friction. The straight-tube
+gradient under-predicts by roughly 25x here, which is far too large to treat
+as an acceptable extrapolation. Note also that Bell-Delaware's own baffle-
+leakage ratio r_lm is ~6.5 on this geometry against a fitted range of about
+r_lm <= 1, so its leakage corrections are themselves extrapolated; the solver
+reports this at runtime.
 
 Run: `python -m hps_combustor.validation.friday_shelltube_n2`
 """
@@ -59,11 +90,11 @@ from ..physics.liquid_flow.regime import real_fluid_state_ph
 from ..result_package import package_steady_run
 
 # Design point found by search (see module docstring).
-MASS_FLOW_G = 0.115  # kg/s, hot gas (diesel/O2) -- free variable, tuned for target power
-MASS_FLOW_C = 17.5   # kg/s, N2 coolant -- free variable, tuned for outlet Vdot target
+MASS_FLOW_G = 0.125  # kg/s, hot gas (diesel/O2) -- free variable, tuned for target power
+MASS_FLOW_C = 1.916  # kg/s, N2 coolant -- FIXED by independent system needs (2026-08-20)
 T_IN_K = 100.0
-P_IN_PA = 88.0e5
-VDOT_TARGET_LS = 30.0  # target outlet volumetric flow rate, L/s (delivered-gas basis)
+P_IN_PA = 101.5e5
+VDOT_TARGET_LS = 30.0  # reference only: coolant flow is now fixed, so Vdot is an outcome
 
 
 def build_inputs():
@@ -78,7 +109,7 @@ def build_inputs():
         "numerical": numericalProp(chemistry_model="finite_rate"),
         "system": system_requirements(),
         "correlations": CorrelationCoefficients(),
-        "run": runProp(run_name="friday_shellntube_n2_30Ls"),
+        "run": runProp(run_name="friday_shellntube_n2_0p9MW"),
     }
 
 

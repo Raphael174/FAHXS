@@ -164,3 +164,75 @@ wiring, not started) and `docs/solver_design/FV_CORE_REWORK_PLAN.md` (Stage D2 o
 - 2026-08-18 (this session, Stage D Slice 1): `gas_closures.py` created; `registry.py`
   gained `ClosureContext.corrCoeffs`/`.extra` and the two new gas-forced-convection regime
   tags (all detailed above).
+
+## Shell-side model corrections (2026-08-20)
+
+Four changes to `main_solve_shellntube.py` / `bell_delaware.py` /
+`shelltube_geometry.py` / `liquid_flow/correlations.py`, in the order they
+matter:
+
+1. **Bell-Delaware Sieder-Tate term enabled.** `(mu_b/mu_w)^0.14` had been left
+   at its neutral default of 1.0 — the correlation's own property-variation
+   correction was switched off. It is now evaluated from the lagged
+   coolant-side wall temperature (`_shell_Tw_lagged`), clamped to [0.25, 4].
+   Lowered the water design point's peak wall temperature by 67 K and resolved
+   a convergence stall; moves the Helium shell-and-tube baseline ~0.1%.
+
+2. **Regime-based closure dispatch.** Which shell-side closure a node used was
+   previously decided by the `coolantProp.coolant_model` STRING, not by the
+   coolant's state. At supercritical pressure the property-ratio closures
+   (McCarthy-Wolf/Taylor) are now used only where the bulk->wall interval
+   actually reaches the pseudo-critical band around `T_pc(p)`; elsewhere
+   Bell-Delaware supplies `h`. Helium at 80 bar has `T_pc = 11.4 K` against a
+   300-1400 K march, so it never needed a property-ratio closure; N2 at 88 bar
+   has `T_pc = 147.8 K` with bulk 100-124 K and wall ~164 K, so it does.
+   Latched one-way per node so the choice cannot chatter.
+
+3. **Pressure march moved onto Bell-Delaware, plus the momentum term.** The
+   closure gradients (MSH, supercritical registry) are straight-TUBE
+   correlations: axial flow along one `L_tube`-long channel with skin friction.
+   The real path crosses the bundle `N_baffles+1` times through `N_tcc` rows
+   each — ~7.5x the path length here, with form drag — so they under-predict by
+   ~25x. Two-phase nodes now take the ALL-LIQUID Bell-Delaware drop scaled by
+   the **Chisholm two-phase multiplier** (`chisholm_two_phase_multiplier`);
+   supercritical/single-phase nodes take Bell-Delaware at local properties.
+   The **momentum (acceleration) term** `dp_acc = G^2 * delta(1/rho)` was
+   omitted entirely and is worth **26% of the water design point's total drop**
+   (2.99 of 11.05 bar) and **23% of N2's** (6.96 of 29.67 bar).
+
+4. **`S_sb` factor-2 bug fixed** in `shelltube_geometry.py`. Shell-to-baffle
+   leakage area is `Ds*Lsb*(pi - theta_ds/2)` (gap x arc length); the code
+   carried a spurious extra `/2`. Confirmed against first principles and
+   Hellborg (2017) eq. 47. `S_sb` 1.218 -> 2.436 cm2, `r_lm` 6.51 -> 6.93.
+
+### Open items / known extrapolations
+
+- **`r_lm = 6.93` is far outside Bell-Delaware's fitted range (`r_lm <~ 1`)** on
+  this geometry: the tube-to-baffle clearance area (17.7 cm2) is ~6.5x the
+  cross-flow area (2.9 cm2), driven by `clearance_tube_baffle = 1.0 mm` on a
+  5 mm tube (2.5x TEMA practice) and a 12 mm baffle spacing. Both leakage
+  corrections are therefore extrapolated — `J_l = 0.39` on heat transfer,
+  `R_l ~ 0.01` on pressure drop. **This is the dominant uncertainty on shell-side
+  dp, larger than any boiling-correlation choice.** The VDI/"modified Delaware"
+  method normalizes leakage differently (`R_Q = (S_sb+S_tb)/(B*L_e)`) and lands
+  at `f_L ~ 0.37` — independent corroboration that ~60% of ideal heat transfer
+  is lost to leakage, so this is not an artifact of one correlation's algebra.
+  Reported at runtime by `print_summary()`.
+- **`chisholm_B` is reconstructed, not transcribed.** Chisholm (1973) /
+  Grant & Chisholm (1979) were unavailable. Corroborated at exactly one point
+  (Hellborg eq. 137 hardcodes `B = 21/Gamma`, which falls in the
+  `9.5 < Gamma < 28` branch). Verify against the primary source before relying
+  on a dp that depends on it. Note Hellborg's hardcoded branch is WRONG for this
+  exchanger: water sits at `Gamma = 3.60`, `G ~ 3000 kg/m2s`, giving `B ~ 1.01`
+  rather than 5.83.
+- **Boiling HTC is still Gungor-Winterton, a tube-flow correlation.** A bundle
+  correlation (Shah 2017, or Doo 2005 for shellside evaporation specifically)
+  would be more defensible, but the measured leverage is small: the coolant film
+  carries only **10.0%** of total thermal resistance in the dome (water) and
+  **0.58%** (N2), so a +/-30% change in the boiling correlation moves UA by ~3%.
+  Also note our shell-side mass flux (~3000 kg/m2s water, ~6600 N2) is far above
+  the kettle-reboiler conditions those bundle correlations are fitted on.
+- **Bell-Delaware's `_pick_row` switches j/f coefficients discontinuously** at
+  Re = 10/100/1000/10^4. Hellborg (2017) flags this as unsuitable for iterative
+  solving and smooths it. Verified NOT to bite at present: both design points sit
+  wholly in the Re > 10^4 band (water 1.7e4 -> 7.6e5, N2 3.5e5 -> 1.9e6).

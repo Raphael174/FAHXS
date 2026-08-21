@@ -11,7 +11,7 @@ Load this file first when working in Claude Code. It is intentionally short; use
 - `docs/context/PHYSICS_CONTEXT.md`: correlations, chemistry, radiation, materials, and calibration knobs.
 - `docs/context/TRANSIENT_STATUS.md`: transient solver implementation status and numerical lessons.
 - `docs/TECHNICAL_REFERENCE.md`: master technical reference for physics, numerics, materials, assumptions, and validation status.
-- `docs/validation/LIQUID_HEATED_CHANNEL_SOLVER_STATUS.md`: liquid/boiling coolant implementation status. Wired into the helical steady coupled march (co-flow validated); shell-and-tube and both transient solvers still postprocess-only/unwired. See `docs/solver_design/LIQUID_COOLANT_INTEGRATION_PLAN.md` for phase status.
+- `docs/validation/LIQUID_HEATED_CHANNEL_SOLVER_STATUS.md`: liquid/boiling coolant implementation status. Wired into BOTH the helical and shell-and-tube steady coupled marches (corrected 2026-08-19 — the older "shell-and-tube is postprocess-only" wording here was stale); both transient solvers remain unwired. See `docs/solver_design/LIQUID_COOLANT_INTEGRATION_PLAN.md` for phase status.
 - `optimization/LLM_CONTEXT.md`: calibration and optimization context.
 - `research/flamelet_kit/LLM_CONTEXT.md`: standalone flamelet/PFR context.
 
@@ -56,6 +56,23 @@ Load this file first when working in Claude Code. It is intentionally short; use
 ## Known Sharp Edges
 
 - Persistent Cantera objects must be reset from cached inlet `T/p/Y` state before repeated sweeps or table builds. Do not read a prior sweep's cooled state as a new inlet.
+- Shell-side model corrections (2026-08-20), see
+  `1Dmodel/physics/liquid_flow/LLM_CONTEXT.md` for the full record:
+  Bell-Delaware's Sieder-Tate `(mu_b/mu_w)^0.14` term is now actually evaluated
+  (it had been left at 1.0); closure dispatch is by local thermodynamic state
+  rather than the `coolant_model` string; the pressure march uses Bell-Delaware
+  plus a Chisholm two-phase multiplier instead of straight-tube friction
+  gradients (which under-predict ~25x on this geometry); and the momentum
+  (acceleration) term `G^2*delta(1/rho)` was added — worth ~25% of shell-side dp.
+  A factor-2 bug in `S_sb` (shell-to-baffle leakage area) was fixed.
+- **Shell-side dp on the current geometry is extrapolated.** Bell-Delaware's
+  baffle-leakage ratio `r_lm = 6.93` against a fitted range of `r_lm <~ 1`
+  (`clearance_tube_baffle = 1.0 mm` on a 5 mm tube, 12 mm baffle spacing). This
+  is the dominant dp uncertainty — larger than any boiling-correlation choice.
+  Flagged at runtime by `shellntube_solver.print_summary()`.
+- `chisholm_B` in `physics/liquid_flow/correlations.py` is **reconstructed, not
+  transcribed** from Chisholm (1973)/Grant & Chisholm (1979). Verify against the
+  primary source before trusting a dp that leans on it.
 - In shell-and-tube calculations, tube-side gas quantities are per tube. Divide total hot-gas mass flow by `N_tubes` for per-tube velocity and enthalpy accounting.
 - Darcy friction convention is used in maintained solver paths. Do not apply a Fanning-to-Darcy factor.
 - `inside_tube_choice="grooved"` uses the corrugated-tube Nu/friction path plus
