@@ -30,6 +30,7 @@ def package_steady_run(solver, inputs: dict[str, Any], summary: dict[str, Any] |
     _write_inputs(run_dir, inputs)
     _write_json(run_dir / "summary.json", summary or {})
     _write_steady_data(run_dir, solver, save_csv=run.save_csv)
+    _write_steady_figures(run_dir, solver)
 
     if run.save_input_snapshot:
         _copy_input_data_snapshot(run_dir)
@@ -218,6 +219,43 @@ def _write_steady_data(run_dir: Path, solver, save_csv: bool):
     np.savez_compressed(data_dir / "steady_data.npz", **arrays)
     if save_csv:
         _write_csv_table(data_dir / "steady_table.csv", arrays)
+
+
+def _write_steady_figures(run_dir: Path, solver):
+    """Render the ``HXDashboard`` themed figures for a solved steady solver.
+
+    Both maintained steady solvers are covered, and both go through the same
+    dashboard code (model_data_process/data_plotting.py):
+
+      * shell-and-tube (duck-typed via ``solver.tube``/``solver.stp``) —
+        through the ``data_master`` adapter in data_plotting_shellntube.py;
+      * helical (duck-typed via ``solver.data_master``) — directly.
+
+    Both saver entry points render under a temporarily-forced Agg backend and
+    restore the caller's backend afterwards, so this can never block on a GUI
+    window nor leave an interactive session headless.
+
+    Never raises: a plotting failure must not lose an otherwise-successful
+    numeric archive. On failure, writes a short note instead of the figures.
+    """
+    fig_dir = run_dir / "figures"
+    try:
+        if hasattr(solver, "tube") and hasattr(solver, "stp"):
+            from .model_data_process.data_plotting_shellntube import save_shelltube_dashboard
+            save_shelltube_dashboard(solver, fig_dir)
+        elif getattr(solver, "data_master", None):
+            from .model_data_process.data_plotting import save_dashboard
+            save_dashboard(solver.data_master, fig_dir,
+                           coolant_name=solver.coolantProp.coolant)
+        else:
+            return
+    except Exception as exc:  # pragma: no cover - defensive, see docstring
+        fig_dir.mkdir(exist_ok=True)
+        (fig_dir / "PLOTTING_FAILED.txt").write_text(
+            f"Automatic figure generation failed: {exc!r}\n"
+            "The rest of this run's numeric archive is unaffected.",
+            encoding="utf-8",
+        )
 
 
 def _write_transient_data(run_dir: Path, time_series: dict[str, Any], save_csv: bool):

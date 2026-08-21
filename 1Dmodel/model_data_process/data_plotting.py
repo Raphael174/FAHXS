@@ -18,8 +18,25 @@ Usage (in a #%% cell after running the solver):
     db.phase_change()   # saturation envelope, quality/void, sensible vs latent
                          # heat split - liquid/boiling coolant only.
     db.all()            # all themes in sequence (boiling()/phase_change() only if data present)
+
+Headless / archiving mode:
+    db = HXDashboard(data_master, coolant_name=..., save_dir="figures")
+    db.all()            # writes one PNG per theme instead of calling plt.show()
+
+    or, as a one-liner (also forces the Agg backend for the duration, then
+    restores whatever backend was active):
+        save_dashboard(data_master, out_dir, coolant_name=...)
+
+Every panel that depends on a field a given solver does not produce (radiation
+outputs, compressibility factor, two-phase fields) is guarded: the panel is
+replaced by a short note and the theme still renders. That is what lets the
+shell-and-tube adapter (data_plotting_shellntube.py) reuse these exact figures.
 """
 
+import os
+from contextlib import contextmanager
+
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import CoolProp.CoolProp as CP
@@ -33,7 +50,10 @@ def _style(ax, x=None):
     ax.set_xlabel(r"$L_{HX}$ [m]")
     if x is not None:
         ax.set_xlim(x[0], x[-1])
-    ax.ticklabel_format(useOffset=False)
+    try:
+        ax.ticklabel_format(useOffset=False)
+    except AttributeError:
+        pass    # log-scaled axis: LogFormatter has no offset to switch off
     ax.grid(which='major', **_GRID)
     ax.grid(which='minor', **_GRID_MINOR)
     ax.minorticks_on()
@@ -44,11 +64,68 @@ def _arr(data, key):
     return np.array(data[key])
 
 
+def _present(data, key):
+    """True when ``key`` holds at least one finite value.
+
+    Distinguishes "this solver does not model that quantity" (absent, empty, or
+    all-NaN) from "it does, and here it is" - so one set of panel definitions
+    can serve solvers with different physics.
+    """
+    v = data.get(key)
+    if v is None:
+        return False
+    a = np.asarray(v, dtype=float)
+    return a.size > 0 and bool(np.isfinite(a).any())
+
+
+def _note_absent(ax, msg):
+    """Blank a panel whose underlying quantity this run does not model."""
+    ax.text(0.5, 0.5, msg, ha='center', va='center', transform=ax.transAxes,
+            fontsize=9, color='gray')
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+
+@contextmanager
+def _agg_backend():
+    """Render with Agg, then restore the caller's backend.
+
+    Interactive use of this module must stay unaffected: an archiving call made
+    mid-session must not leave the user's own plots headless afterwards.
+    """
+    previous = matplotlib.get_backend()
+    plt.switch_backend("Agg")
+    try:
+        yield
+    finally:
+        try:
+            plt.switch_backend(previous)
+        except Exception:      # pragma: no cover - backend no longer available
+            pass
+
+
 class HXDashboard:
-    def __init__(self, data_master, coolant_name=None):
+    def __init__(self, data_master, coolant_name=None, save_dir=None, dpi=200):
         self.d = data_master
         self.x = _arr(data_master, "L_HX")
         self.coolant_name = coolant_name or "Coolant"
+        self.save_dir = str(save_dir) if save_dir is not None else None
+        self.dpi = dpi
+        self.written = []
+        if self.save_dir is not None:
+            os.makedirs(self.save_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    def _finish(self, fig, name):
+        """Show the figure interactively, or write it into ``save_dir``."""
+        if self.save_dir is None:
+            plt.show()
+            return None
+        path = os.path.join(self.save_dir, name)
+        fig.savefig(path, dpi=self.dpi, bbox_inches='tight')
+        plt.close(fig)
+        self.written.append(path)
+        return path
 
     # ------------------------------------------------------------------
     def thermal(self):
@@ -67,13 +144,15 @@ class HXDashboard:
 
         ax = axes[0, 1]
         ax.plot(x, _arr(d, "q_w") / 1e3,     color="crimson", label=r"$q_w$ total")
-        ax.plot(x, _arr(d, "q_w_rad") / 1e3, color="salmon",  label=r"$q_{w,rad}$")
+        if _present(d, "q_w_rad"):
+            ax.plot(x, _arr(d, "q_w_rad") / 1e3, color="salmon",  label=r"$q_{w,rad}$")
         ax.set_ylabel(r"Heat flux [kW/m²]")
         _style(ax, x=x)
 
         ax = axes[1, 0]
         ax.plot(x, d["h_g_conv"], color="orange",          label=r"$h_{g,conv}$")
-        ax.plot(x, d["h_g_rad"],  color="red",             label=r"$h_{g,rad}$")
+        if _present(d, "h_g_rad"):
+            ax.plot(x, d["h_g_rad"],  color="red",             label=r"$h_{g,rad}$")
         ax.plot(x, d["h_c"],      color="cornflowerblue",  label=r"$h_c$")
         ax.set_ylabel(r"$h$ [W/m²/K]")
         _style(ax, x=x)
@@ -91,7 +170,7 @@ class HXDashboard:
         ax.legend(lines1 + lines2, labs1 + labs2, fontsize=8)
         _style(ax, x=x)
 
-        plt.show()
+        self._finish(fig, "thermal.png")
 
     # ------------------------------------------------------------------
     def helium(self):
@@ -122,7 +201,7 @@ class HXDashboard:
         axes[1, 1].axhline(1.0, color='red', linestyle='--', linewidth=1, label="choking limit")
         axes[1, 1].legend(fontsize=8)
 
-        plt.show()
+        self._finish(fig, "coolant.png")
 
     # ------------------------------------------------------------------
     def combustion(self):
@@ -144,7 +223,7 @@ class HXDashboard:
             ax.set_ylabel(ylabel)
             _style(ax, x=x)
 
-        plt.show()
+        self._finish(fig, "combustion.png")
 
     # ------------------------------------------------------------------
     def mechanical(self):
@@ -181,11 +260,15 @@ class HXDashboard:
         ax.set_ylabel("Wall temperature [°C]")
         _style(ax, x=x)
 
-        plt.show()
+        self._finish(fig, "mechanical.png")
 
     # ------------------------------------------------------------------
     def radiation(self):
-        """Radiation model outputs."""
+        """Radiation model outputs (no-op when the run has no radiation model)."""
+        if not _present(self.d, "emissivity_g"):
+            print("radiation(): this run has no radiation model outputs "
+                  "(emissivity_g/X_CO2/X_H2O absent) - nothing to plot.")
+            return
         fig, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
         fig.suptitle("Radiation", fontweight='bold')
         x, d = self.x, self.d
@@ -214,7 +297,7 @@ class HXDashboard:
         ax.set_ylabel(r"$h_{g,rad} / h_{g,conv}$")
         _style(ax, x=x)
 
-        plt.show()
+        self._finish(fig, "radiation.png")
 
     # ------------------------------------------------------------------
     def boiling(self):
@@ -265,7 +348,7 @@ class HXDashboard:
         ax.set_ylabel(r"$dp_c/dx$ [kPa/m]")
         _style(ax, x=x)
 
-        plt.show()
+        self._finish(fig, "boiling.png")
 
     # ------------------------------------------------------------------
     def phase_change(self):
@@ -336,7 +419,7 @@ class HXDashboard:
         ax.set_ylabel("Cumulative specific heat [kJ/kg]")
         _style(ax, x=x)
 
-        plt.show()
+        self._finish(fig, "phase_change.png")
 
     # ------------------------------------------------------------------
     def mega(self):
@@ -372,7 +455,7 @@ class HXDashboard:
 
         # (0,2) Mach numbers — He and gas on same axis (both << 1)
         ax = axes[0, 2]
-        ax.plot(x, d["Mach_c"], color="purple",    label=r"$Ma_{He}$")
+        ax.plot(x, d["Mach_c"], color="purple",    label=r"$Ma_c$")
         ax.plot(x, d["Mach_g"], color="firebrick", label=r"$Ma_g$")
         ax.set_ylabel("Mach [-]")
         _style(ax, x=x)
@@ -380,10 +463,11 @@ class HXDashboard:
         # (1,0) Heat flux: total, rad, conv
         ax = axes[1, 0]
         q_w    = _arr(d, "q_w")
-        q_rad  = _arr(d, "q_w_rad")
         ax.plot(x, q_w             / 1e3, color="crimson", label=r"$q_w$ total")
-        ax.plot(x, q_rad           / 1e3, color="salmon",  label=r"$q_{w,rad}$")
-        ax.plot(x, (q_w - q_rad)   / 1e3, color="tomato",  label=r"$q_{w,conv}$", linestyle='--')
+        if _present(d, "q_w_rad"):
+            q_rad  = _arr(d, "q_w_rad")
+            ax.plot(x, q_rad           / 1e3, color="salmon",  label=r"$q_{w,rad}$")
+            ax.plot(x, (q_w - q_rad)   / 1e3, color="tomato",  label=r"$q_{w,conv}$", linestyle='--')
         ax.set_ylabel(r"Heat flux [kW/m²]")
         _style(ax, x=x)
 
@@ -418,23 +502,32 @@ class HXDashboard:
 
         # (2,2) Compressibility
         ax = axes[2, 2]
-        ax.plot(x, d["Z"], color="gray", label=r"$Z$")
-        ax.set_ylabel(r"Compressibility $Z$ [-]")
-        _style(ax, x=x)
+        if _present(d, "Z"):
+            ax.plot(x, d["Z"], color="gray", label=r"$Z$")
+            ax.set_ylabel(r"Compressibility $Z$ [-]")
+            _style(ax, x=x)
+        else:
+            _note_absent(ax, "compressibility factor $Z$\nnot tracked by this solver")
 
         # (3,0) Emissivity / absorptivity
         ax = axes[3, 0]
-        ax.plot(x, d["emissivity_g"],   color="firebrick", label=r"$\varepsilon_g$")
-        ax.plot(x, d["absorptivity_g"], color="salmon",    label=r"$\alpha_g$")
-        ax.set_ylabel("Emissivity / absorptivity [-]")
-        _style(ax, x=x)
+        if _present(d, "emissivity_g"):
+            ax.plot(x, d["emissivity_g"],   color="firebrick", label=r"$\varepsilon_g$")
+            ax.plot(x, d["absorptivity_g"], color="salmon",    label=r"$\alpha_g$")
+            ax.set_ylabel("Emissivity / absorptivity [-]")
+            _style(ax, x=x)
+        else:
+            _note_absent(ax, "no radiation model on this run")
 
         # (3,1) Molar fractions CO2 and H2O
         ax = axes[3, 1]
-        ax.plot(x, d["X_CO2"], color="gray",      label=r"$X_{CO_2}$")
-        ax.plot(x, d["X_H2O"], color="steelblue", label=r"$X_{H_2O}$")
-        ax.set_ylabel("Molar fraction [-]")
-        _style(ax, x=x)
+        if _present(d, "X_CO2"):
+            ax.plot(x, d["X_CO2"], color="gray",      label=r"$X_{CO_2}$")
+            ax.plot(x, d["X_H2O"], color="steelblue", label=r"$X_{H_2O}$")
+            ax.set_ylabel("Molar fraction [-]")
+            _style(ax, x=x)
+        else:
+            _note_absent(ax, "gas composition not tracked per node")
 
         # (3,2) Stresses + yield
         ax = axes[3, 2]
@@ -444,11 +537,16 @@ class HXDashboard:
         ax.set_ylabel("Stress [MPa]")
         _style(ax, x=x)
 
-        plt.show()
+        self._finish(fig, "mega.png")
 
     # ------------------------------------------------------------------
     def all(self):
-        """Render all thematic figures (boiling()/phase_change() only if quality_c data is present)."""
+        """Render every thematic figure, plus the single-figure ``mega()`` overview.
+
+        Themes whose data this run does not carry (radiation, two-phase) skip
+        themselves with a printed note. Returns the list of files written when
+        in ``save_dir`` mode, and an empty list interactively.
+        """
         self.thermal()
         self.helium()
         self.combustion()
@@ -456,3 +554,17 @@ class HXDashboard:
         self.radiation()
         self.boiling()
         self.phase_change()
+        self.mega()
+        return list(self.written)
+
+
+def save_dashboard(data_master, out_dir, coolant_name=None, dpi=200):
+    """Write the full dashboard to ``out_dir`` as PNGs; return the written paths.
+
+    Forces the Agg backend for the duration so an automated run can never block
+    on a GUI window, and restores the previous backend on the way out.
+    """
+    with _agg_backend():
+        db = HXDashboard(data_master, coolant_name=coolant_name,
+                         save_dir=out_dir, dpi=dpi)
+        return db.all()

@@ -310,6 +310,8 @@ class shellntube_solver:
 
         dQ = np.zeros(N); T_g_a = np.zeros(N); T_wg_a = np.zeros(N); T_wc_a = np.zeros(N)
         rho_g_a = np.zeros(N); U_g_a = np.zeros(N); mach_g_a = np.zeros(N)
+        mu_g_a = np.zeros(N); k_g_a = np.zeros(N); cp_g_a = np.zeros(N)
+        Re_g_a = np.zeros(N); Pr_g_a = np.zeros(N)
         h_g_a = np.zeros(N); q_w_shell_a = np.zeros(N); chf_margin_a = np.full(N, np.nan)
         p_g_a = np.zeros(N); h_c_a = np.zeros(N); dp_shell_a = np.zeros(N)
         for i in range(N):
@@ -334,6 +336,8 @@ class shellntube_solver:
             rho_g_a[i] = rho_g; U_g_a[i] = U_g; mach_g_a[i] = U_g / a_g
             Re_g = rho_g * U_g * self.D_tube_i / mu_g
             Pr_g = cp_g * mu_g / k_g
+            mu_g_a[i] = mu_g; k_g_a[i] = k_g; cp_g_a[i] = cp_g
+            Re_g_a[i] = Re_g; Pr_g_a[i] = Pr_g
             x_local = (i + 0.5) * dx
             T_s_local = T_shell_profile[i]
             f_g, Nu_g = self._tube_side_hydraulics(Re_g, Pr_g, x_local, T_g, T_s_local)
@@ -409,6 +413,7 @@ class shellntube_solver:
         self._shell_Tw_lagged = T_wc_a
         return dict(dQ=dQ, T_g=T_g_a, T_wg=T_wg_a, T_wc=T_wc_a, h_g=h_g_a, h_c=h_c_a, p_g=p_g_a,
                    rho_g=rho_g_a, U_g=U_g_a, mach_g=mach_g_a,
+                   mu_g=mu_g_a, k_g=k_g_a, cp_g=cp_g_a, Re_g=Re_g_a, Pr_g=Pr_g_a,
                    q_w_shell=q_w_shell_a, chf_margin=chf_margin_a, dp_shell=dp_shell_a,
                    T_g_out=T_g, p_g_out=p_g)
 
